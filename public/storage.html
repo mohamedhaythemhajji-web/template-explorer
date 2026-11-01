@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Storage · Template Reference Explorer</title>
+<style>
+  body{margin:0;background:#f4f5f8;color:#12141a;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  .wrap{max-width:760px;margin:0 auto;padding:28px 20px}
+  a{color:#1a5cff;text-decoration:none;font-weight:600}
+  h1{margin:10px 0 18px;font-size:22px}
+  .card{background:#fff;border:1px solid #e2e5ec;border-radius:12px;padding:18px 20px;margin-bottom:16px}
+  .big{font-size:16px;margin-bottom:10px}
+  .bar{height:12px;background:#eef0f4;border-radius:6px;overflow:hidden}
+  #fill{height:100%;width:0;background:#12a150;transition:width .3s}
+  .muted{color:#6b7280;font-size:12.5px;margin:10px 0 0}
+  label{font-size:12.5px;font-weight:600;color:#6b7280}
+  input{border:1px solid #e2e5ec;border-radius:7px;padding:6px 9px;font-size:13px;width:90px;margin:0 6px}
+  button{border:1px solid #e2e5ec;background:#fff;border-radius:7px;padding:6px 12px;font-size:12.5px;font-weight:600;cursor:pointer}
+  table{width:100%;border-collapse:collapse}
+  th,td{text-align:left;padding:8px 6px;border-bottom:1px solid #f0f1f5;font-size:13px}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#6b7280}
+  td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a href="/">← Back to app</a>
+  <h1>Cloud storage</h1>
+
+  <div class="card">
+    <div class="big" id="summary">Loading…</div>
+    <div class="bar"><div id="fill"></div></div>
+    <p class="muted" id="note"></p>
+    <p style="margin:14px 0 0">
+      <label>Your plan's storage limit (MB)<input id="limit" type="number" min="1"></label>
+      <button id="saveLimit">Save</button>
+      <button id="refresh">Refresh</button>
+    </p>
+  </div>
+
+  <div class="card">
+    <table>
+      <thead><tr><th>Template</th><th class="n">Image</th><th class="n">Data</th><th class="n">Total</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <p class="muted">This adds up what is stored in the cloud (image + template data). It is close to, but not exactly, what Netlify counts. Check Netlify's Usage page for the official number.</p>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = n => n < 1024 ? n + ' B' : n < 1048576 ? (n/1024).toFixed(1) + ' KB' : n < 1073741824 ? (n/1048576).toFixed(1) + ' MB' : (n/1073741824).toFixed(2) + ' GB';
+const limitMB = () => +localStorage.getItem('tre_limit_mb') || 500;
+
+async function api(path) {
+  const tok = localStorage.getItem('tre_token') || '';
+  let r = await fetch(path, { headers: tok ? { 'x-team-token': tok } : {} });
+  if (r.status === 401) {
+    const t = prompt('Enter the team access code:');
+    if (t) {
+      localStorage.setItem('tre_token', t.trim());
+      r = await fetch(path, { headers: { 'x-team-token': t.trim() } });
+    }
+  }
+  return r;
+}
+
+async function measure(item) {
+  const r = await api('/api/boards/' + item.id);
+  if (!r.ok) throw new Error('board ' + r.status);
+  const blob = await r.blob();
+  const doc = JSON.parse(await blob.text());
+  let img = 0;
+  if (item.hasImage) {
+    const ir = await api(`/api/boards/${item.id}/image?v=${item.imageRev}`);
+    if (ir.ok) img = (await ir.blob()).size;
+  }
+  return { name: doc.name || 'Untitled', img, meta: blob.size, total: img + blob.size };
+}
+
+async function run() {
+  $('#summary').textContent = 'Loading…';
+  $('#limit').value = limitMB();
+  try {
+    const lr = await api('/api/boards');
+    if (!lr.ok) throw new Error('Could not load (HTTP ' + lr.status + ')');
+    const list = await lr.json();
+    const rows = [];
+    let i = 0, done = 0;
+    async function worker() {
+      while (i < list.length) {
+        const item = list[i++];
+        try { rows.push(await measure(item)); } catch (e) { rows.push({ name: item.id + ' (error)', img: 0, meta: 0, total: 0 }); }
+        $('#summary').textContent = `Measuring ${++done} of ${list.length}…`;
+      }
+    }
+    await Promise.all([worker(), worker(), worker(), worker()]);
+
+    rows.sort((a, b) => b.total - a.total);
+    const used = rows.reduce((s, r) => s + r.total, 0);
+    const limit = limitMB() * 1048576;
+    const pct = Math.min(100, used / limit * 100);
+    const avg = rows.length ? used / rows.length : 0;
+    $('#summary').innerHTML = `<b>${fmt(used)}</b> used of <b>${limitMB()} MB</b> · ${fmt(Math.max(0, limit - used))} left`;
+    $('#fill').style.width = pct + '%';
+    $('#fill').style.background = pct > 90 ? '#dc2626' : pct > 70 ? '#e8820c' : '#12a150';
+    $('#note').textContent = `${rows.length} template${rows.length === 1 ? '' : 's'}` +
+      (avg ? ` · room for roughly ${Math.max(0, Math.floor((limit - used) / avg))} more at the current average size (${fmt(avg)})` : '');
+    $('#rows').innerHTML = rows.map(r =>
+      `<tr><td>${esc(r.name)}</td><td class="n">${fmt(r.img)}</td><td class="n">${fmt(r.meta)}</td><td class="n"><b>${fmt(r.total)}</b></td></tr>`
+    ).join('') || '<tr><td colspan="4">No templates in the cloud yet.</td></tr>';
+  } catch (e) {
+    $('#summary').textContent = 'Error: ' + e.message;
+  }
+}
+
+$('#saveLimit').onclick = () => {
+  localStorage.setItem('tre_limit_mb', String(Math.max(1, parseInt($('#limit').value, 10) || 500)));
+  run();
+};
+$('#refresh').onclick = run;
+run();
+</script>
+</body>
+</html>
