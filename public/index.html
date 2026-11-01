@@ -230,6 +230,23 @@ input.board-name:focus{outline:0;border-color:var(--blue);background:#fff}
 .sw.auto{background:#fff;color:var(--muted);font-size:13px;font-weight:700;line-height:1;display:grid;place-items:center}
 .region{transition:opacity .18s,border-color .15s}
 .badge,.num-big,.list-item .num,.tag{transition:background .15s,color .15s}
+/* colour picker */
+.cp{position:relative;margin:2px 0 14px}
+.cp-lab{font-size:11px;font-weight:650;color:var(--muted);margin-bottom:4px}
+.cp-btn{display:flex;align-items:center;gap:9px;width:100%;padding:5px 9px;border:1px solid var(--line);border-radius:6px;background:#fff;cursor:pointer;text-align:left}
+.cp-btn:hover{border-color:#cfd4de}
+.cp-chip{width:34px;height:18px;border-radius:5px;background:var(--s);box-shadow:inset 0 0 0 1px rgba(0,0,0,.12);flex:none;transition:background .15s}
+.cp-txt{flex:1;font-size:12.5px;font-weight:600}
+.cp-arrow{color:var(--muted);font-size:10px}
+.cp-pop{display:none;position:absolute;z-index:20;left:0;right:0;top:100%;margin-top:6px;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 30px rgba(15,23,42,.18);padding:10px}
+.cp.open .cp-pop{display:block}
+.cp-grid{display:grid;grid-template-columns:repeat(12,1fr);gap:4px}
+.cp-sw{aspect-ratio:1;border:0;border-radius:5px;background:var(--s);cursor:pointer;padding:0;box-shadow:inset 0 0 0 1px rgba(0,0,0,.1);transition:transform .1s}
+.cp-sw:hover{transform:scale(1.25);position:relative;z-index:1}
+.cp-sw.on{box-shadow:0 0 0 2px #fff,0 0 0 4px var(--ink)}
+.cp-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px;padding-top:9px;border-top:1px solid #f0f1f5}
+.cp-foot label{display:flex;align-items:center;gap:7px;margin:0;font-size:12px;font-weight:600;color:var(--muted)}
+.cp-foot input[type=color]{width:34px;height:24px;padding:0;margin:0;border:1px solid var(--line);border-radius:5px;background:none;cursor:pointer}
 </style>
 </head>
 <body>
@@ -1489,26 +1506,60 @@ document.addEventListener('keydown',e=>{
   else if(mod&&k==='d'){e.preventDefault();clip=JSON.parse(JSON.stringify(sel));pasteRegion();}
   else if(mod&&k==='c'){clip=JSON.parse(JSON.stringify(sel));toast('Element copied');}
 });
-
 /* ===== per-element colours ===== */
-const COLORS=['#1a5cff','#0ca5b0','#12a150','#84a30d','#e8820c','#dc2626','#d6336c','#9333ea','#7048e8','#a16207','#475569','#12141a'];
 const regColor=(b,r)=>r.color||typeColor(b,r.type);
+const hex2rgb=h=>[1,3,5].map(i=>parseInt(h.slice(i,i+2),16));
+const rgb2hex=a=>'#'+a.map(v=>Math.round(clamp(v,0,255)).toString(16).padStart(2,'0')).join('');
+const lum=a=>{const c=a.map(v=>{v/=255;return v<=.03928?v/12.92:Math.pow((v+.055)/1.055,2.4);});return .2126*c[0]+.7152*c[1]+.0722*c[2];};
+function readable(hex){let a=hex2rgb(hex),f=1;while(lum(a.map(v=>v*f))>.28&&f>.15)f-=.03;return rgb2hex(a.map(v=>v*f));}
+function hsl2hex(h,s,l){s/=100;l/=100;const k=n=>(n+h/30)%12,a=s*Math.min(l,1-l),f=n=>l-a*Math.max(-1,Math.min(k(n)-3,Math.min(9-k(n),1)));return rgb2hex([f(0),f(8),f(4)].map(v=>v*255));}
+const COLORS=(()=>{
+  const hues=[0,25,45,70,100,150,180,205,225,260,290,330],rows=[];
+  [58,48,38,28].forEach(l=>rows.push(hues.map(h=>hsl2hex(h,70,l))));
+  rows.push(Array.from({length:12},(_,i)=>hsl2hex(215,14,10+i*4)));
+  return rows.flat().map(readable);
+})();
+
+function cpText(r){return r.color?r.color.toUpperCase():'Auto · type colour';}
 function swatchHTML(r){
-  return `<div class="swrow" id="swrow"><span class="swl">Colour</span>`
-    +COLORS.map(c=>`<button type="button" class="sw${c===r.color?' on':''}" data-c="${c}" style="--s:${c}" title="${c}"></button>`).join('')
-    +`<button type="button" class="sw auto${r.color?'':' on'}" data-c="" title="Reset to the type colour">↺</button></div>`;
+  const eff=regColor(cur,r),on=(r.color||'').toLowerCase();
+  return `<div class="cp" id="cp"><div class="cp-lab">Colour</div>
+    <button type="button" class="cp-btn" data-cp="toggle"><span class="cp-chip" style="--s:${eff}"></span><span class="cp-txt">${cpText(r)}</span><span class="cp-arrow">▾</span></button>
+    <div class="cp-pop"><div class="cp-grid">${COLORS.map(c=>`<button type="button" class="cp-sw${c===on?' on':''}" data-cp="pick" data-c="${c}" style="--s:${c}" title="${c}"></button>`).join('')}</div>
+    <div class="cp-foot"><label>Custom <input type="color" data-cp="custom" value="${eff}"></label><button type="button" class="mini" data-cp="reset">Reset to auto</button></div></div></div>`;
+}
+function setColor(r,c,key){
+  r.color=c;
+  refreshRegionEl(r);
+  const n=$(`.list-item[data-id="${r.id}"] .num`);if(n)n.style.background=regColor(cur,r);
+  const cp=$('#cp');
+  if(cp){
+    $('.cp-chip',cp).style.setProperty('--s',regColor(cur,r));
+    $('.cp-txt',cp).textContent=cpText(r);
+    $$('.cp-sw',cp).forEach(x=>x.classList.toggle('on',x.dataset.c===(r.color||'').toLowerCase()));
+  }
+  checkpoint(key);
 }
 $('#panel').addEventListener('click',e=>{
-  const s=e.target.closest('.sw');
-  if(!s||view!=='editor'||mode!=='edit')return;
+  const t=e.target.closest('[data-cp]');
+  if(!t||view!=='editor'||mode!=='edit')return;
   const r=getSel();if(!r)return;
-  r.color=s.dataset.c||'';
-  $$('#swrow .sw').forEach(x=>x.classList.toggle('on',x===s));
-  refreshRegionEl(r);
-  const n=$(`.list-item[data-id="${r.id}"] .num`);
-  if(n)n.style.background=regColor(cur,r);
-  s.blur();
-  checkpoint();
+  const k=t.dataset.cp,cp=$('#cp');
+  if(k==='toggle')cp.classList.toggle('open');
+  else if(k==='pick'){setColor(r,t.dataset.c);cp.classList.remove('open');}
+  else if(k==='reset'){setColor(r,'');cp.classList.remove('open');}
+});
+$('#panel').addEventListener('input',e=>{
+  if(e.target.dataset.cp!=='custom')return;
+  const r=getSel();if(r)setColor(r,readable(e.target.value),'color:'+r.id);
+});
+$('#panel').addEventListener('change',e=>{
+  if(e.target.dataset.cp!=='custom')return;
+  const r=getSel();if(r&&r.color)e.target.value=r.color;
+});
+document.addEventListener('click',e=>{
+  const cp=$('#cp');
+  if(cp&&!cp.contains(e.target))cp.classList.remove('open');
 });
 
 boot();
