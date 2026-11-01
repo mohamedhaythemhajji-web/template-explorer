@@ -18,6 +18,7 @@ const J = (data, status = 200) =>
 /* ---- input sanitising (allow-list) ---- */
 const str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
 const num = (v, d = 0) => (Number.isFinite(+v) ? +v : d);
+const tm = v => (v === '' || v == null || !Number.isFinite(+v) ? '' : Math.max(0, +v));
 
 function sanitizeRegion(r) {
   return {
@@ -30,6 +31,8 @@ function sanitizeRegion(r) {
     concept: str(r.concept, 200),
     notes: str(r.notes, 5000),
     color: /^#[0-9a-f]{6}$/i.test(r.color) ? r.color : '',
+    t0: tm(r.t0),
+    t1: tm(r.t1),
     fields: (Array.isArray(r.fields) ? r.fields : []).slice(0, 50)
       .map(f => ({ k: str(f && f.k, 100), v: str(f && f.v, 1000), req: !!(f && f.req) }))
   };
@@ -46,6 +49,11 @@ function sanitizeBoard(b) {
     canvasAuto: b.canvasAuto !== false,
     types: types.length ? types : ['Element', 'Controller'],
     fieldNames: (Array.isArray(b.fieldNames) ? b.fieldNames : []).slice(0, 50).map(t => str(t, 100)).filter(Boolean),
+    /* video scenes: boards that share the same vid belong to one video */
+    vid: /^[A-Za-z0-9_-]{3,64}$/.test(b.vid || '') ? b.vid : '',
+    vname: str(b.vname, 200),
+    vurl: /^https?:\/\//i.test(b.vurl || '') ? str(b.vurl, 1000) : '',
+    t: Math.max(0, num(b.t)),
     regions: (Array.isArray(b.regions) ? b.regions : []).slice(0, 1000)
       .filter(r => r && typeof r === 'object').map(sanitizeRegion),
     updated: Date.now()

@@ -255,8 +255,20 @@ input.board-name:focus{outline:0;border-color:var(--blue);background:#fff}
 .reqtag,.opttag{font-style:normal;font-size:9.5px;font-weight:700;padding:1px 7px;border-radius:10px;margin-left:7px;vertical-align:1px}
 .reqtag{background:#fdecec;color:#b42318}
 .opttag{background:#f1f2f6;color:#6b7280}
-
-
+/* video scenes */
+#strip{display:none;flex:0 0 auto;align-items:center;gap:12px;padding:8px 14px;background:#fafbfc;border-bottom:1px solid var(--line)}
+.st-items{display:flex;gap:8px;overflow-x:auto;flex:1;min-width:0;padding:3px}
+.scn{flex:0 0 auto;width:78px;cursor:pointer;text-align:center}
+.scn-img{height:54px;border-radius:6px;background:#eceff4;border:2px solid transparent;display:flex;align-items:center;justify-content:center;overflow:hidden;color:var(--muted);box-shadow:0 0 0 1px var(--line)}
+.scn-img img{max-width:100%;max-height:100%;object-fit:contain}
+.scn:hover .scn-img{box-shadow:0 0 0 1px #cfd4de}
+.scn.on .scn-img{border-color:var(--blue);box-shadow:none}
+.scn-t{font-size:11px;font-weight:700;margin-top:3px;color:var(--muted)}
+.scn.on .scn-t{color:var(--blue)}
+.st-act{display:flex;gap:6px;flex:0 0 auto}
+.vbadge{position:absolute;left:8px;bottom:8px;background:var(--blue);color:#fff;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px}
+.cap-ctl{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:10px 0}
+.cap-time{font-variant-numeric:tabular-nums;font-weight:700;min-width:48px;text-align:center}
 </style>
 </head>
 <body>
@@ -282,6 +294,7 @@ input.board-name:focus{outline:0;border-color:var(--blue);background:#fff}
 <main>
   <div id="center">
     <div id="bar"></div>
+    <div id="strip"></div>
     <section id="stage"></section>
   </div>
   <aside id="panel"></aside>
@@ -293,6 +306,7 @@ input.board-name:focus{outline:0;border-color:var(--blue);background:#fff}
 /* =========================================================
    Template Reference Explorer
    Local cache: IndexedDB. Cloud: Netlify Blobs via /api (Netlify Function).
+   Video templates: each scene is a normal board that shares a `vid`.
    ========================================================= */
 const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
 const uid=()=>Math.random().toString(36).slice(2,9)+Date.now().toString(36).slice(-4);
@@ -303,12 +317,34 @@ const slug=s=>(s||'template').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/
 const csv=s=>s.split(',').map(x=>x.trim()).filter(Boolean);
 const uniq=a=>[...new Set(a)];
 const MIN=1; // minimum box size, in % of canvas
+const MAXCMP=8; // max templates in Compare
 const MAX_IMG_BYTES=3.5*1024*1024; // keeps uploads under Netlify's ~6 MB request limit
 const PALETTE=['#1a5cff','#e8820c','#12a150','#d6336c','#7048e8','#0ca5b0','#a16207','#475569'];
 const PRESETS=[['auto','Auto (match image size)'],['1080x1080','Square 1:1 · 1080×1080'],['1080x1350','Portrait 4:5 · 1080×1350'],
   ['1080x1920','Story 9:16 · 1080×1920'],['1200x628','Landscape 1.91:1 · 1200×628'],['1920x1080','Landscape 16:9 · 1920×1080'],['custom','Custom']];
 const typeColor=(b,t)=>{const i=b.types.indexOf(t);return PALETTE[(i<0?b.types.length:i)%PALETTE.length];};
 const splitFeed=s=>(s||'').split(/[,;\n·]/).map(x=>x.trim()).filter(Boolean);
+
+/* ---------- time helpers (video) ---------- */
+function parseT(s){
+  s=String(s??'').trim();if(!s)return '';
+  let v;
+  if(s.includes(':')){const p=s.split(':').map(Number);if(p.some(x=>!isFinite(x)))return '';v=p.reduce((a,x)=>a*60+x,0);}
+  else v=parseFloat(s);
+  return isFinite(v)&&v>=0?Math.round(v*100)/100:'';
+}
+function fmtT(v){
+  if(v===''||v==null||!isFinite(+v))return '';
+  v=+v;const m=Math.floor(v/60),s=v-m*60;
+  const ss=s%1?s.toFixed(1).padStart(4,'0'):String(Math.floor(s)).padStart(2,'0');
+  return m+':'+ss;
+}
+function timingStr(r){
+  const a=fmtT(r.t0),z=fmtT(r.t1);
+  if(a===''&&z==='')return 'Whole scene';
+  return (a||'0:00')+' → '+(z||'end');
+}
+const dispName=b=>b.vid?`${b.vname||'Video'} · ${b.name||'Scene'} @ ${fmtT(b.t||0)}`:(b.name||'Untitled');
 
 /* ---------- prefs / settings ---------- */
 const prefs=Object.assign({labels:true,snap:0,lock:false,colW:320},JSON.parse(localStorage.getItem('tre_prefs')||'{}'));
@@ -632,13 +668,14 @@ function applyImage(b,p){
 
 /* ---------- state ---------- */
 let boards=[],cur=null,view='editor',mode='view',selId=null,zoom='fit',imgVersion=0;
-let picked=new Set(),libSearch='',libSort='name';
+let picked=new Set(),libSearch='',libSort='name',libKind='all';
 let cmpIds=[],cmpSel=null,cmpDiff=false,cmpBy='label';
 let listFilter='',clip=null,draw=null,drag=null;
 let saveT=null,pending=null;
 
 const newBoard=name=>({id:uid(),name,image:null,thumb:null,imgW:0,imgH:0,canvas:{w:1080,h:1080},canvasAuto:true,types:['Element','Controller'],fieldNames:[],regions:[],updated:Date.now()});
 const sortBoards=()=>boards.sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+const scenesOf=vid=>boards.filter(b=>b.vid===vid).sort((a,b)=>(a.t||0)-(b.t||0));
 const getSel=()=>cur.regions.find(r=>r.id===selId)||null;
 const pxOf=(r,b=cur)=>({x:Math.round(r.x*b.canvas.w/100),y:Math.round(r.y*b.canvas.h/100),w:Math.round(r.w*b.canvas.w/100),h:Math.round(r.h*b.canvas.h/100)});
 function ratioStr(w,h){if(!w||!h)return '–';const g=gcd(w,h),a=w/g,b=h/g;return (a<=40&&b<=40)?`${a}:${b}`:`${(w/h).toFixed(2)}:1`;}
@@ -701,6 +738,7 @@ async function boot(){
 }
 function setCurrent(b){flushSave();cur=b;selId=null;imgVersion++;listFilter='';zoom='fit';localStorage.setItem('tre_last',b.id);resetHistory();}
 function openBoard(b){setCurrent(b);view='editor';mode=b.image?'view':'edit';render(true);}
+function switchScene(b){setCurrent(b);if(!b.image)mode='edit';render(true);}
 function setView(v){
   flushSave();
   if(v==='compare'){
@@ -718,17 +756,36 @@ function render(force){
   document.body.dataset.view=view;document.body.dataset.mode=mode;
   $$('#viewSeg button').forEach(b=>b.classList.toggle('active',b.dataset.view===view));
   $$('#modeSeg button').forEach(b=>b.classList.toggle('active',b.dataset.mode===mode));
-  updateUndoBtns();renderBar();
+  updateUndoBtns();renderBar();renderStrip();
   if(view==='library')renderLibrary();else if(view==='compare')renderCompare();else renderEditor(force);
   renderPanel();
 }
+
+/* ---------- scenes strip (video) ---------- */
+function renderStrip(){
+  const s=$('#strip');
+  if(view!=='editor'||!cur||!cur.vid){s.style.display='none';s.innerHTML='';return;}
+  const sc=scenesOf(cur.vid);
+  s.style.display='flex';
+  s.innerHTML=`<div class="st-items">${sc.map(b=>`<div class="scn${b.id===cur.id?' on':''}" data-scn="${b.id}" title="${esc(b.name||'Scene')}">
+    <div class="scn-img">${b.thumb?`<img src="${b.thumb}" alt="">`:'<span>—</span>'}</div><div class="scn-t">${esc(fmtT(b.t||0))}</div></div>`).join('')}</div>
+    <div class="st-act">${mode==='edit'?'<button class="btn sm primary" data-st="capture">+ Capture frames</button>':''}${cur.vurl?'<button class="btn sm" data-st="play">▶ Play video</button>':''}</div>`;
+}
+$('#strip').addEventListener('click',e=>{
+  const s=e.target.closest('[data-scn]');
+  if(s){const b=boards.find(x=>x.id===s.dataset.scn);if(b&&b!==cur)switchScene(b);return;}
+  const a=e.target.closest('[data-st]');if(!a)return;
+  if(a.dataset.st==='capture')captureModal();
+  else if(a.dataset.st==='play')playModal();
+});
 
 /* ---------- bar ---------- */
 function renderBar(){
   let h='';
   if(view==='editor'){
-    h+=`<select data-bar="board" title="Switch template">${boards.map(b=>`<option value="${b.id}"${b.id===cur.id?' selected':''}>${esc(b.name||'Untitled')}</option>`).join('')}</select>
+    h+=`<select data-bar="board" title="Switch template">${boards.map(b=>`<option value="${b.id}"${b.id===cur.id?' selected':''}>${esc(dispName(b))}</option>`).join('')}</select>
     <button class="btn sm" data-act="newBoard">+ New</button>
+    <button class="btn sm" data-act="newVideo">▶ New video</button>
     <button class="btn sm" data-act="dup">Duplicate</button>
     <button class="btn sm" data-act="boardSettings">Template settings</button>
     <span class="sep"></span>
@@ -738,16 +795,18 @@ function renderBar(){
     <label class="opt"><input type="checkbox" data-bar="labels"${prefs.labels?' checked':''}> Labels</label>`;
   }else if(view==='library'){
     h+=`<input type="search" data-bar="search" placeholder="Search names, labels, feed columns…" value="${esc(libSearch)}" style="min-width:240px">
+    <select data-bar="kind"><option value="all"${libKind==='all'?' selected':''}>All templates</option><option value="static"${libKind==='static'?' selected':''}>Static only</option><option value="video"${libKind==='video'?' selected':''}>Video only</option></select>
     <select data-bar="sort"><option value="name"${libSort==='name'?' selected':''}>Sort: Name</option><option value="updated"${libSort==='updated'?' selected':''}>Sort: Recently edited</option><option value="elements"${libSort==='elements'?' selected':''}>Sort: Most elements</option></select>
     <button class="btn sm primary" data-act="newBoard">+ New template</button>
+    <button class="btn sm primary" data-act="newVideo">▶ New video template</button>
     <button class="btn sm" data-act="uploadMany">Upload images → templates</button>
     <span class="sep"></span>
     <button class="btn sm" data-act="doCompare"${picked.size<2?' disabled':''}>Compare selected (${picked.size})</button>
     ${picked.size?'<button class="btn sm ghost" data-act="clearPick">Clear</button>':''}`;
   }else{
     const bs=cmpBoards(),avail=boards.filter(b=>!cmpIds.includes(b.id));
-    h+=bs.map(b=>`<span class="chipb">${esc(b.name||'Untitled')}<button data-act="rmCmp" data-id="${b.id}" title="Remove">✕</button></span>`).join('');
-    if(bs.length<6&&avail.length)h+=`<select data-bar="cmpAdd"><option value="">+ Add template…</option>${avail.map(b=>`<option value="${b.id}">${esc(b.name||'Untitled')}</option>`).join('')}</select>`;
+    h+=bs.map(b=>`<span class="chipb">${esc(dispName(b))}<button data-act="rmCmp" data-id="${b.id}" title="Remove">✕</button></span>`).join('');
+    if(bs.length<MAXCMP&&avail.length)h+=`<select data-bar="cmpAdd"><option value="">+ Add template…</option>${avail.map(b=>`<option value="${b.id}">${esc(dispName(b))}</option>`).join('')}</select>`;
     h+=`<span class="sep"></span>
     <label class="opt">Match by <select data-bar="cmpBy"><option value="label"${cmpBy==='label'?' selected':''}>Label</option><option value="num"${cmpBy==='num'?' selected':''}>Number</option></select></label>
     <label class="opt"><input type="checkbox" data-bar="cmpDiff"${cmpDiff?' checked':''}> Differences only</label>
@@ -761,6 +820,7 @@ $('#bar').addEventListener('click',e=>{
   const a=e.target.closest('[data-act]');if(!a)return;
   const act=a.dataset.act;
   if(act==='newBoard')newBoardModal();
+  else if(act==='newVideo')newVideoModal();
   else if(act==='dup')duplicateBoard(cur);
   else if(act==='boardSettings')boardSettingsModal();
   else if(act==='zoomIn')setZoom(effZoom()*1.2);
@@ -768,7 +828,10 @@ $('#bar').addEventListener('click',e=>{
   else if(act==='zoomFit'){zoom='fit';applyZoom();}
   else if(act==='zoom100')setZoom(1);
   else if(act==='uploadMany')pickFiles(true,createFromFiles);
-  else if(act==='doCompare'){cmpIds=[...picked].slice(0,6);cmpSel=null;view='compare';render(true);}
+  else if(act==='doCompare'){
+    if(picked.size>MAXCMP)toast(`Comparing the first ${MAXCMP} of ${picked.size}`);
+    cmpIds=[...picked].slice(0,MAXCMP);cmpSel=null;view='compare';render(true);
+  }
   else if(act==='clearPick'){picked.clear();render();}
   else if(act==='rmCmp'){cmpIds=cmpIds.filter(i=>i!==a.dataset.id);cmpSel=null;render(true);}
 });
@@ -779,6 +842,7 @@ $('#bar').addEventListener('input',e=>{
   else if(k==='labels'){prefs.labels=t.checked;savePrefs();$$('.canvas').forEach(c=>c.classList.toggle('labels',prefs.labels));}
   else if(k==='search'){libSearch=t.value;renderLibrary();}
   else if(k==='sort'){libSort=t.value;renderLibrary();}
+  else if(k==='kind'){libKind=t.value;renderLibrary();}
   else if(k==='cmpAdd'){if(t.value){cmpIds.push(t.value);render(true);}}
   else if(k==='cmpBy'){cmpBy=t.value;cmpSel=null;render(true);}
   else if(k==='cmpDiff'){cmpDiff=t.checked;renderPanel();}
@@ -817,8 +881,10 @@ function renderEditor(force){
     st.dataset.key=key;st.className='ed';st.innerHTML='';
     if(!cur.image){
       const dz=document.createElement('div');dz.className='dropzone';
-      dz.innerHTML='<div class="dz-icon">▤</div><h2>Drop an ad mockup here</h2><p>or click to upload · you can also paste an image (Ctrl+V)</p>';
-      dz.onclick=()=>pickFiles(false,f=>loadImageFile(f[0]));
+      dz.innerHTML=cur.vid
+        ?'<div class="dz-icon">▶</div><h2>Capture a frame from your video</h2><p>Click here (in Edit mode) to load the video and capture scenes, or drop an image</p>'
+        :'<div class="dz-icon">▤</div><h2>Drop an ad mockup here</h2><p>or click to upload · you can also paste an image (Ctrl+V)</p>';
+      dz.onclick=()=>{if(cur.vid){if(mode==='edit')captureModal();else toast('Switch to Edit mode to capture frames');}else pickFiles(false,f=>loadImageFile(f[0]));};
       st.appendChild(dz);
     }else{
       const cv=document.createElement('div');cv.className='canvas'+(prefs.labels?' labels':'');
@@ -936,7 +1002,7 @@ function attachDraw(ov){
 }
 function nextNum(){const n=cur.regions.map(r=>parseInt(r.num,10)).filter(x=>!isNaN(x));return String((n.length?Math.max(...n):0)+1);}
 function newRegion(rect,extra={}){
-  return Object.assign({id:uid(),x:rect.x,y:rect.y,w:rect.w,h:rect.h,num:nextNum(),label:'',feed:'',type:cur.types[0],concept:'Both',notes:'',
+  return Object.assign({id:uid(),x:rect.x,y:rect.y,w:rect.w,h:rect.h,num:nextNum(),label:'',feed:'',type:cur.types[0],concept:'Both',notes:'',t0:'',t1:'',
     fields:(cur.fieldNames||[]).map(k=>({k,v:''}))},extra);
 }
 function addRegion(rect,extra){
@@ -961,27 +1027,35 @@ function nudge(dx,dy){
 /* =========================================================
    PANEL
    ========================================================= */
+function vidFormHTML(){
+  return `<div class="form" style="margin-bottom:6px">
+    <label>Video name<input data-vf="vname" value="${esc(cur.vname)}" placeholder="e.g. Spring promo 15s"></label>
+    <label>Scene time (m:ss or seconds)<input data-vf="t" value="${esc(fmtT(cur.t||0))}" placeholder="0:03"></label>
+    <label>Video link (optional, a direct .mp4 URL)<input data-vf="vurl" value="${esc(cur.vurl)}" placeholder="https://…/video.mp4"></label></div>`;
+}
 function renderPanel(){
   const p=$('#panel');
   if(view==='compare')return renderComparePanel(p);
   if(view!=='editor'){p.innerHTML='';return;}
   const sel=getSel(),n=cur.regions.length;
   let h=`<div class="panel-top">`;
-  h+=mode==='edit'?`<input class="board-name" id="boardName" value="${esc(cur.name)}" placeholder="Template name">`:`<h2 class="board-name-view">${esc(cur.name||'Untitled template')}</h2>`;
-  h+=`<div class="board-meta">${cur.canvas.w}×${cur.canvas.h} px · ${n} element${n===1?'':'s'}${cur.image?'':' · no image yet'}</div>
-    <div class="row"><button class="btn sm" data-act="upload">${cur.image?'Replace image':'Upload image'}</button>
+  h+=mode==='edit'?`<input class="board-name" id="boardName" value="${esc(cur.name)}" placeholder="${cur.vid?'Scene name':'Template name'}">`
+    :`<h2 class="board-name-view">${esc(cur.vid?(cur.vname||'Video')+' · '+(cur.name||'Scene'):(cur.name||'Untitled template'))}</h2>`;
+  h+=`<div class="board-meta">${cur.vid?'▶ Scene at '+fmtT(cur.t||0)+' · ':''}${cur.canvas.w}×${cur.canvas.h} px · ${n} element${n===1?'':'s'}${cur.image?'':' · no image yet'}</div>`;
+  if(cur.vid&&mode==='edit')h+=vidFormHTML();
+  h+=`<div class="row"><button class="btn sm" data-act="upload">${cur.image?'Replace image':'Upload image'}</button>
     ${mode==='edit'&&cur.image?'<button class="btn sm primary" data-act="suggest">✨ Suggest elements</button>':''}
-    ${mode==='edit'?'<button class="btn sm ghost danger" data-act="delBoard">Delete template</button>':''}</div></div>`;
+    ${mode==='edit'?`<button class="btn sm ghost danger" data-act="delBoard">${cur.vid?'Delete scene':'Delete template'}</button>`:''}</div></div>`;
   h+=`<div class="panel-sec" id="selection"><div class="sec-title">${sel?'Selected element':'Selection'}</div>`;
   if(sel)h+=mode==='view'?detailHTML(sel,cur):formHTML(sel);
-  else h+=`<div class="empty-sel">${!cur.image?'Upload an ad image to get started.':mode==='view'
+  else h+=`<div class="empty-sel">${!cur.image?(cur.vid?'Capture a frame from your video to get started.':'Upload an ad image to get started.'):mode==='view'
     ?'Click a numbered box on the ad (or use ↑ ↓) to see its feed reference.'
     :'Drag on the image to draw a box. Click a box to select it; drag to move, pull handles to resize. Hold <b>Shift</b> to draw over an existing box.'}</div>`;
   h+=`</div><div class="panel-sec" style="border-bottom:0"><div class="sec-title"><span>All elements · ${n}</span>
     ${mode==='edit'&&n?'<span class="row"><button class="mini" data-act="sortNum">Sort by #</button><button class="mini" data-act="renumber">Renumber</button><button class="mini" data-act="bulk">Bulk edit</button></span>':''}</div>
     ${n>4?`<input class="filter" id="listFilter" placeholder="Filter elements…" value="${esc(listFilter)}">`:''}
     <div id="elList"></div>
-    ${mode==='edit'?'<div class="hint">Shortcuts: arrows nudge (Shift = 10px) · Ctrl+D duplicate · Ctrl+C / V copy &amp; paste · Del delete · Ctrl+Z undo · E / V switch mode · + − 0 1 zoom</div>':''}</div>`;
+    ${mode==='edit'?'<div class="hint">Shortcuts: arrows nudge (Shift = 10px) · Ctrl+D duplicate · Ctrl+C / V copy &amp; paste · Del delete · Ctrl+Z undo · E / V switch mode · + − 0 1 zoom · [ ] previous / next scene</div>':''}</div>`;
   p.innerHTML=h;renderList();
   const li=$('.list-item.is-selected',p);if(li)li.scrollIntoView({block:'nearest'});
 }
@@ -1000,7 +1074,8 @@ function detailHTML(r,b){
   ${chips.length?`<div class="chips">${chips.map(c=>`<button class="chip" data-copy="${esc(c)}" title="Click to copy">${esc(c)}</button>`).join('')}</div>`:''}
   <div class="tagrow"><span class="tag" style="background:${col}1f;color:${col}">${esc(r.type||'Element')}</span>${r.concept?`<span class="tag t-concept">${esc(r.concept)}</span>`:''}</div>
   <div class="spec"><div><span>Container</span><b>${p.w} × ${p.h} px</b></div><div><span>Ratio</span><b>${ratioStr(p.w,p.h)}</b></div>
-    <div><span>Position</span><b>${p.x}, ${p.y}</b></div><div><span>Canvas</span><b>${b.canvas.w} × ${b.canvas.h}</b></div></div>
+    <div><span>Position</span><b>${p.x}, ${p.y}</b></div><div><span>Canvas</span><b>${b.canvas.w} × ${b.canvas.h}</b></div>
+    ${b.vid?`<div><span>Timing</span><b>${esc(timingStr(r))}</b></div><div><span>Scene</span><b>${esc(fmtT(b.t||0))}</b></div>`:''}</div>
   ${fields.map(f=>`<div class="kv"><span>${esc(f.k)}${f.k?(f.req?'<em class="reqtag">Required</em>':'<em class="opttag">Optional</em>'):''}</span><b>${esc(f.v)}</b></div>`).join('')}
   ${r.notes?`<p class="notes">${esc(r.notes)}</p>`:''}`;
 }
@@ -1016,6 +1091,9 @@ function formHTML(r){
   <label>Concept / variant<input data-f="concept" list="dlConcept" value="${esc(r.concept)}" placeholder="Both / Grid1 / Grid4"></label>
   <datalist id="dlConcept">${concepts.map(c=>`<option value="${esc(c)}">`).join('')}</datalist>
   <datalist id="dlKeys">${keys.map(c=>`<option value="${esc(c)}">`).join('')}</datalist>
+  ${cur.vid?`<div class="subhead"><span>Timing in video</span></div>
+  <div class="two"><label>Appears (m:ss)<input data-tm="t0" value="${esc(fmtT(r.t0))}" placeholder="0:00"></label>
+    <label>Disappears (m:ss)<input data-tm="t1" value="${esc(fmtT(r.t1))}" placeholder="end"></label></div>`:''}
   <div class="subhead"><span>Container size (px)</span><span class="ratioOut">${ratioStr(p.w,p.h)}</span></div>
   <div class="four"><label>X<input type="number" min="0" data-px="x" value="${p.x}"></label><label>Y<input type="number" min="0" data-px="y" value="${p.y}"></label>
     <label>W<input type="number" min="1" data-px="w" value="${p.w}"></label><label>H<input type="number" min="1" data-px="h" value="${p.h}"></label></div>
@@ -1042,13 +1120,29 @@ function applyPx(r,k,val){
   syncPx(r);
 }
 
+let vT=null;
+function propagateVideo(){
+  const src=cur;clearTimeout(vT);
+  vT=setTimeout(()=>{
+    scenesOf(src.vid).forEach(b=>{if(b!==src){b.vname=src.vname;b.vurl=src.vurl;b.updated=Date.now();dbPut(b).catch(()=>{});}});
+  },500);
+}
+
 $('#panel').addEventListener('input',e=>{
   const t=e.target;
-  if(t.id==='boardName'){cur.name=t.value;save();const o=$(`#bar [data-bar="board"] option[value="${cur.id}"]`);if(o)o.textContent=cur.name||'Untitled';return;}
+  if(t.id==='boardName'){cur.name=t.value;save();const o=$(`#bar [data-bar="board"] option[value="${cur.id}"]`);if(o)o.textContent=dispName(cur);if(cur.vid)renderStrip();return;}
   if(t.id==='listFilter'){listFilter=t.value;renderList();return;}
+  if(t.dataset.vf&&cur.vid){
+    const k=t.dataset.vf;
+    if(k==='t'){const v=parseT(t.value);if(v==='')return;cur.t=v;save();renderStrip();}
+    else{cur[k]=k==='vurl'?t.value.trim():t.value;save();propagateVideo();renderStrip();}
+    const o=$(`#bar [data-bar="board"] option[value="${cur.id}"]`);if(o)o.textContent=dispName(cur);
+    return;
+  }
   const sel=getSel();if(!sel||view!=='editor')return;
   const d=t.dataset;
   if(d.f){sel[d.f]=t.value;refreshRegionEl(sel);renderList();checkpoint('f:'+sel.id+d.f);}
+  else if(d.tm){sel[d.tm]=parseT(t.value);checkpoint('tm:'+sel.id+d.tm);}
   else if(d.px){applyPx(sel,d.px,t.value);checkpoint('px:'+sel.id);}
   else if(d.fk!==undefined){sel.fields[+d.fk].k=t.value;checkpoint('fk:'+sel.id+d.fk);}
   else if(d.fv!==undefined){sel.fields[+d.fv].v=t.value;checkpoint('fv:'+sel.id+d.fv);}
@@ -1095,18 +1189,46 @@ function copyText(t){
 }
 
 /* =========================================================
-   LIBRARY (multiple templates)
+   LIBRARY (multiple templates, videos grouped)
    ========================================================= */
+function libEntries(){
+  const q=libSearch.trim().toLowerCase();
+  const match=b=>!q||[b.name,b.vname].join(' ').toLowerCase().includes(q)||b.regions.some(r=>[r.label,r.feed,r.concept].join(' ').toLowerCase().includes(q));
+  const out=[],seen=new Map();
+  boards.forEach(b=>{
+    if(b.vid){
+      if(libKind==='static')return;
+      let g=seen.get(b.vid);
+      if(!g){g={video:true,vid:b.vid,scenes:[],hit:false};seen.set(b.vid,g);out.push(g);}
+      g.scenes.push(b);if(match(b))g.hit=true;
+    }else if(libKind!=='video'&&match(b))out.push({video:false,b});
+  });
+  const res=out.filter(e=>!e.video||e.hit);
+  res.forEach(e=>{if(e.video)e.scenes.sort((a,b)=>(a.t||0)-(b.t||0));});
+  const name=e=>e.video?(e.scenes[0].vname||'Video'):(e.b.name||'');
+  const upd=e=>e.video?Math.max(...e.scenes.map(s=>s.updated||0)):(e.b.updated||0);
+  const cnt=e=>e.video?e.scenes.reduce((n,s)=>n+s.regions.length,0):e.b.regions.length;
+  const f=libSort==='updated'?(a,b)=>upd(b)-upd(a):libSort==='elements'?(a,b)=>cnt(b)-cnt(a):(a,b)=>name(a).localeCompare(name(b));
+  return res.sort(f);
+}
 function renderLibrary(){
   const st=$('#stage');st.className='lib';st.dataset.key='lib';
-  const q=libSearch.trim().toLowerCase();
-  let list=boards.filter(b=>!q||(b.name||'').toLowerCase().includes(q)||b.regions.some(r=>[r.label,r.feed,r.concept].join(' ').toLowerCase().includes(q)));
-  const cmp=libSort==='updated'?(a,b)=>b.updated-a.updated:libSort==='elements'?(a,b)=>b.regions.length-a.regions.length:(a,b)=>(a.name||'').localeCompare(b.name||'');
-  list=[...list].sort(cmp);
+  const list=libEntries();
   st.innerHTML=`<div class="grid">${list.map(cardHTML).join('')}<div class="card add" data-act="newBoard">+ New template<br><small style="font-weight:400">or drop images here</small></div></div>`
-    +(q&&!list.length?'<div class="empty-lib">No templates match your search.</div>':'');
+    +(libSearch.trim()&&!list.length?'<div class="empty-lib">No templates match your search.</div>':'');
 }
-function cardHTML(b){
+function cardHTML(e){
+  if(e.video){
+    const sc=e.scenes,f=sc.find(s=>s.thumb)||sc[0],n=sc.reduce((a,s)=>a+s.regions.length,0);
+    const ids=sc.map(s=>s.id),allP=ids.length>0&&ids.every(id=>picked.has(id)),isCur=ids.includes(cur.id);
+    const upd=Math.max(...sc.map(s=>s.updated||0));
+    return `<div class="card${allP?' picked':''}${isCur?' current':''}" data-vid="${f.vid}">
+      <label class="pick" title="Select all scenes for compare"><input type="checkbox" data-pickv="${f.vid}"${allP?' checked':''}></label>
+      <div class="thumb">${f.thumb?`<img src="${f.thumb}" alt="" loading="lazy">`:'<span>No image</span>'}<span class="vbadge">▶ Video · ${sc.length} scene${sc.length===1?'':'s'}</span><span class="cnt">${n}</span></div>
+      <div class="cbody"><div class="ctitle">${esc(f.vname||'Video')}</div><div class="cmeta">${f.canvas.w}×${f.canvas.h} px · ${new Date(upd).toLocaleDateString()}</div></div>
+      <div class="cact"><button class="btn sm" data-act="open" data-vid="${f.vid}">Open</button><button class="btn sm" data-act="cdup" data-vid="${f.vid}">Duplicate</button><button class="btn sm ghost danger" data-act="cdel" data-vid="${f.vid}">Delete</button></div></div>`;
+  }
+  const b=e.b;
   return `<div class="card${picked.has(b.id)?' picked':''}${b.id===cur.id?' current':''}" data-id="${b.id}">
     <label class="pick" title="Select for compare"><input type="checkbox" data-pick="${b.id}"${picked.has(b.id)?' checked':''}></label>
     <div class="thumb">${b.thumb?`<img src="${b.thumb}" alt="" loading="lazy">`:'<span>No image</span>'}<span class="cnt">${b.regions.length}</span></div>
@@ -1117,24 +1239,40 @@ $('#stage').addEventListener('click',e=>{
   if(view==='library'){
     const a=e.target.closest('[data-act]');
     if(a){
+      const act=a.dataset.act;
+      if(act==='newBoard'){newBoardModal();return;}
+      if(a.dataset.vid){
+        const vid=a.dataset.vid;
+        if(act==='open'){const sc=scenesOf(vid);if(sc[0])openBoard(sc[0]);}
+        else if(act==='cdup')duplicateVideo(vid);
+        else if(act==='cdel')deleteVideo(vid);
+        return;
+      }
       const b=boards.find(x=>x.id===a.dataset.id);
-      if(a.dataset.act==='newBoard')newBoardModal();
-      else if(b&&a.dataset.act==='open')openBoard(b);
-      else if(b&&a.dataset.act==='cdup')duplicateBoard(b);
-      else if(b&&a.dataset.act==='cdel')deleteBoard(b);
+      if(b&&act==='open')openBoard(b);
+      else if(b&&act==='cdup')duplicateBoard(b);
+      else if(b&&act==='cdel')deleteBoard(b);
       return;
     }
     if(e.target.closest('.pick'))return;
-    const card=e.target.closest('.card[data-id]');
-    if(card){const b=boards.find(x=>x.id===card.dataset.id);if(b)openBoard(b);}
+    const card=e.target.closest('.card[data-id],.card[data-vid]');
+    if(card){
+      if(card.dataset.vid){const sc=scenesOf(card.dataset.vid);if(sc[0])openBoard(sc[0]);}
+      else{const b=boards.find(x=>x.id===card.dataset.id);if(b)openBoard(b);}
+    }
   }else if(view==='compare'){
     const a=e.target.closest('[data-act="openCol"]');
     if(a){const b=boards.find(x=>x.id===a.dataset.id);if(b)openBoard(b);}
   }
 });
 $('#stage').addEventListener('change',e=>{
-  const id=e.target.dataset&&e.target.dataset.pick;if(!id||view!=='library')return;
-  if(e.target.checked)picked.add(id);else picked.delete(id);
+  if(view!=='library')return;
+  const d=e.target.dataset||{};
+  if(d.pick){
+    if(e.target.checked)picked.add(d.pick);else picked.delete(d.pick);
+  }else if(d.pickv){
+    scenesOf(d.pickv).forEach(s=>{if(e.target.checked)picked.add(s.id);else picked.delete(s.id);});
+  }else return;
   e.target.closest('.card').classList.toggle('picked',e.target.checked);renderBar();
 });
 
@@ -1167,7 +1305,7 @@ function renderCompare(){
   if(!bs.length){st.innerHTML='<div class="empty-lib" style="margin:auto">Pick templates in the Library, then press Compare.</div>';return;}
   bs.forEach(b=>{
     const col=document.createElement('div');col.className='col';col.style.width=prefs.colW+'px';
-    col.innerHTML=`<div class="col-head"><div style="min-width:0"><b>${esc(b.name||'Untitled')}</b><span>${b.canvas.w}×${b.canvas.h} · ${b.regions.length} elements</span></div><button class="btn sm" data-act="openCol" data-id="${b.id}">Open</button></div>`;
+    col.innerHTML=`<div class="col-head"><div style="min-width:0"><b>${esc(dispName(b))}</b><span>${b.canvas.w}×${b.canvas.h} · ${b.regions.length} elements</span></div><button class="btn sm" data-act="openCol" data-id="${b.id}">Open</button></div>`;
     const cv=document.createElement('div');cv.className='canvas'+(prefs.labels?' labels':'');
     if(b.image){const img=new Image();img.src=urlOf(b);img.alt='';img.draggable=false;cv.appendChild(img);}
     else{const n=document.createElement('div');n.className='noimg';n.textContent='No image';cv.appendChild(n);}
@@ -1195,10 +1333,10 @@ function grpHTML(g){
     ${g.differs?'<span class="flag warn">feed differs</span>':''}${g.missing?`<span class="flag warn">missing in ${g.missing}</span>`:''}</div>`;
   bs.forEach((b,i)=>{
     const rs=g.per[i];
-    h+=`<div class="grp-row"><span class="bn" title="${esc(b.name)}">${esc(b.name||'Untitled')}</span><span class="bf${rs?'':' none'}">${rs?esc(rs.map(r=>r.feed||'—').join(' · ')):'not present'}</span></div>`;
+    h+=`<div class="grp-row"><span class="bn" title="${esc(dispName(b))}">${esc(dispName(b))}</span><span class="bf${rs?'':' none'}">${rs?esc(rs.map(r=>r.feed||'—').join(' · ')):'not present'}</span></div>`;
   });
   if(on)h+=bs.map((b,i)=>{const rs=g.per[i];if(!rs)return '';
-    return rs.map(r=>{const p=pxOf(r,b);return `<div class="xtra"><b>${esc(b.name)}</b> · ${esc(r.type)}${r.concept?' · '+esc(r.concept):''} · ${p.w}×${p.h} px (${ratioStr(p.w,p.h)})
+    return rs.map(r=>{const p=pxOf(r,b);return `<div class="xtra"><b>${esc(dispName(b))}</b> · ${esc(r.type)}${r.concept?' · '+esc(r.concept):''} · ${p.w}×${p.h} px (${ratioStr(p.w,p.h)})${b.vid?' · ⏱ '+esc(timingStr(r)):''}
       ${(r.fields||[]).filter(f=>f.k||f.v).map(f=>`<br>${esc(f.k)}${f.req?' (required)':''}: ${esc(f.v)}`).join('')}${r.notes?`<br><i>${esc(r.notes)}</i>`:''}</div>`;}).join('');}).join('');
   return h+'</div>';
 }
@@ -1206,6 +1344,7 @@ function grpHTML(g){
 /* =========================================================
    MODALS
    ========================================================= */
+let onModalClose=null;
 function openModal({title,body,actions=[],wide=false}){
   closeModal();
   const root=$('#modalRoot');
@@ -1220,7 +1359,10 @@ function openModal({title,body,actions=[],wide=false}){
   const f=$('input,select,textarea',m);if(f)f.focus();
   return m;
 }
-const closeModal=()=>{$('#modalRoot').innerHTML='';};
+function closeModal(){
+  if(onModalClose){const f=onModalClose;onModalClose=null;try{f();}catch(e){}}
+  $('#modalRoot').innerHTML='';
+}
 
 function canvasFields(c,auto){
   const key=auto?'auto':(PRESETS.some(p=>p[0]===`${c.w}x${c.h}`)?`${c.w}x${c.h}`:'custom');
@@ -1255,7 +1397,7 @@ function newBoardModal(){
 }
 function boardSettingsModal(){
   const b=cur,imgInfo=b.image?`Image: ${b.origW||b.imgW}×${b.origH||b.imgH}px.`:'No image yet.';
-  const m=openModal({title:'Template settings',
+  const m=openModal({title:b.vid?'Scene settings':'Template settings',
     body:`<label class="ml">Canvas size (real ad pixels)${canvasFields(b.canvas,b.canvasAuto)}</label>
     <p class="mhint">${imgInfo} Boxes are stored as percentages, so changing the canvas size rescales every container's px values without moving the boxes.</p>
     <label class="ml">Element types (comma separated, each gets its own colour)<input id="bsTypes" value="${esc(b.types.join(', '))}"></label>
@@ -1306,10 +1448,11 @@ function bulkModal(){
 function exportModal(){
   const m=openModal({title:'Export',body:`<div class="exp">
     <button data-exp="all"><b>All templates · JSON backup</b><span>Everything, including images. Use Import to restore or share.</span></button>
-    <button data-exp="one"><b>This template · JSON</b><span>${esc(cur.name||'Untitled')}</span></button>
-    <button data-exp="csv"><b>This template · CSV table</b><span>Number, label, feed, concept, container size px, extra fields, notes</span></button>
-    <button data-exp="tsv"><b>This template · copy as table</b><span>Paste into Google Sheets or Excel</span></button>
-    <button data-exp="png"><b>This template · annotated PNG</b><span>The ad with numbered boxes, good for docs</span></button></div>`,
+    <button data-exp="one"><b>${cur.vid?'This video · JSON (all scenes)':'This template · JSON'}</b><span>${esc(cur.vid?(cur.vname||'Video'):(cur.name||'Untitled'))}</span></button>
+    ${cur.vid?'<button data-exp="vcsv"><b>This video · CSV (all scenes)</b><span>One table with every scene, its elements and timings</span></button>':''}
+    <button data-exp="csv"><b>${cur.vid?'This scene':'This template'} · CSV table</b><span>Number, label, feed, concept, ${cur.vid?'timing, ':''}container size px, extra fields, notes</span></button>
+    <button data-exp="tsv"><b>${cur.vid?'This scene':'This template'} · copy as table</b><span>Paste into Google Sheets or Excel</span></button>
+    <button data-exp="png"><b>${cur.vid?'This scene':'This template'} · annotated PNG</b><span>The ad with numbered boxes, good for docs</span></button></div>`,
     actions:[{text:'Close'}]});
   m.addEventListener('click',e=>{const b=e.target.closest('[data-exp]');if(!b)return;closeModal();exporters[b.dataset.exp]();});
 }
@@ -1320,11 +1463,13 @@ function exportModal(){
 function downloadBlob(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1500);}
 async function serializeBoard(b){const o=clean(b);o.image=b.image?await blobToDataURL(b.image):null;return o;}
 function tableRows(b){
-  const head=['#','Label','Type','Feed columns','Concept','X (px)','Y (px)','Width (px)','Height (px)','Ratio','Extra fields','Notes'];
-  return [head,...b.regions.map(r=>{const p=pxOf(r,b);return [r.num,r.label,r.type,r.feed,r.concept,p.x,p.y,p.w,p.h,ratioStr(p.w,p.h),
+  const v=!!b.vid;
+  const head=['#','Label','Type','Feed columns','Concept',...(v?['Scene time','Appears','Disappears']:[]),'X (px)','Y (px)','Width (px)','Height (px)','Ratio','Extra fields','Notes'];
+  return [head,...b.regions.map(r=>{const p=pxOf(r,b);return [r.num,r.label,r.type,r.feed,r.concept,...(v?[fmtT(b.t||0),fmtT(r.t0),fmtT(r.t1)]:[]),p.x,p.y,p.w,p.h,ratioStr(p.w,p.h),
     (r.fields||[]).filter(f=>f.k||f.v).map(f=>f.k+(f.req?' (required)':'')+': '+f.v).join('; '),(r.notes||'').replace(/\n/g,' ')];})];
 }
 const csvCell=v=>{const s=String(v??'');return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;};
+const exportName=()=>cur.vid?`${cur.vname||'video'}-${fmtT(cur.t||0).replace(':','m')}`:cur.name;
 const exporters={
   async all(){
     const list=[];for(const b of boards)list.push(await serializeBoard(b));
@@ -1332,10 +1477,16 @@ const exporters={
     toast('Exported all templates');
   },
   async one(){
-    downloadBlob(new Blob([JSON.stringify({format:'template-reference-explorer',version:3,boards:[await serializeBoard(cur)]})],{type:'application/json'}),`${slug(cur.name)}.json`);
-    toast('Exported template');
+    const list=[];for(const b of (cur.vid?scenesOf(cur.vid):[cur]))list.push(await serializeBoard(b));
+    downloadBlob(new Blob([JSON.stringify({format:'template-reference-explorer',version:3,boards:list})],{type:'application/json'}),`${slug(cur.vid?cur.vname:cur.name)}.json`);
+    toast('Exported');
   },
-  csv(){downloadBlob(new Blob(['\ufeff'+tableRows(cur).map(r=>r.map(csvCell).join(',')).join('\n')],{type:'text/csv'}),`${slug(cur.name)}-reference.csv`);toast('CSV exported');},
+  vcsv(){
+    const rows=[];
+    scenesOf(cur.vid).forEach((b,i)=>{const t=tableRows(b);if(!i)rows.push(['Scene',...t[0]]);t.slice(1).forEach(r=>rows.push([b.name||'Scene',...r]));});
+    downloadBlob(new Blob(['\ufeff'+rows.map(r=>r.map(csvCell).join(',')).join('\n')],{type:'text/csv'}),`${slug(cur.vname)}-all-scenes.csv`);toast('CSV exported');
+  },
+  csv(){downloadBlob(new Blob(['\ufeff'+tableRows(cur).map(r=>r.map(csvCell).join(',')).join('\n')],{type:'text/csv'}),`${slug(exportName())}-reference.csv`);toast('CSV exported');},
   tsv(){copyText(tableRows(cur).map(r=>r.join('\t')).join('\n')).then(()=>toast('Table copied. Paste it into a sheet'));},
   async png(){
     if(!cur.image)return toast('This template has no image');
@@ -1348,7 +1499,7 @@ const exporters={
       x.beginPath();x.arc(rx,ry,11*s,0,Math.PI*2);x.fillStyle=col;x.fill();x.strokeStyle='#fff';x.lineWidth=2*s;x.stroke();
       x.fillStyle='#fff';x.fillText(String(r.num||''),rx,ry+.5*s);
     });
-    c.toBlob(bl=>downloadBlob(bl,`${slug(cur.name)}-annotated.png`),'image/png');
+    c.toBlob(bl=>downloadBlob(bl,`${slug(exportName())}-annotated.png`),'image/png');
   }
 };
 async function importFile(file){
@@ -1358,8 +1509,15 @@ async function importFile(file){
     flushSave();
     const clash=list.some(b=>b.id&&boards.some(x=>x.id===b.id));
     const overwrite=clash?confirm('Some imported templates already exist.\n\nOK = overwrite them\nCancel = import as copies'):false;
+    const vmap={};
     for(const b of list){
-      if(!b.id||(clash&&!overwrite&&boards.some(x=>x.id===b.id))){b.id=uid();if(clash)b.name=(b.name||'Untitled')+' (imported)';}
+      if(!b.id||(clash&&!overwrite&&boards.some(x=>x.id===b.id))){
+        b.id=uid();
+        if(clash){
+          b.name=(b.name||'Untitled')+(b.vid?'':' (imported)');
+          if(b.vid){vmap[b.vid]=vmap[b.vid]||uid();b.vid=vmap[b.vid];b.vname=(b.vname||'Video')+' (imported)';}
+        }
+      }
       await migrate(b);markImgDirty(b.id);await dbPut(b);
     }
     boards=await dbGetAll();sortBoards();
@@ -1404,16 +1562,39 @@ async function duplicateBoard(b=cur){
   const c=clean(b);c.id=uid();c.name=(b.name||'Untitled')+' copy';c.updated=Date.now();
   c.regions=JSON.parse(JSON.stringify(b.regions));c.types=[...b.types];c.fieldNames=[...(b.fieldNames||[])];c.canvas={...b.canvas};
   boards.push(c);sortBoards();await dbPut(c);
-  if(view==='editor'){setCurrent(c);render(true);toast('Duplicated. Replace the image to reuse the references');}
+  if(view==='editor'){setCurrent(c);render(true);toast(b.vid?'Scene duplicated. Change its time in the panel':'Duplicated. Replace the image to reuse the references');}
   else{render();toast('Duplicated');}
 }
+async function duplicateVideo(vid){
+  flushSave();
+  const nv=uid();
+  for(const b of scenesOf(vid)){
+    const c=clean(b);c.id=uid();c.vid=nv;c.vname=(b.vname||'Video')+' copy';c.updated=Date.now();
+    c.regions=JSON.parse(JSON.stringify(b.regions));c.types=[...b.types];c.fieldNames=[...(b.fieldNames||[])];c.canvas={...b.canvas};
+    boards.push(c);await dbPut(c);
+  }
+  sortBoards();render();toast('Video duplicated');
+}
 async function deleteBoard(b=cur){
-  if(!confirm(`Delete "${b.name||'Untitled'}"? This cannot be undone.`))return;
+  if(!confirm(b.vid?`Delete the scene "${b.name||'Scene'}" at ${fmtT(b.t||0)}? This cannot be undone.`:`Delete "${b.name||'Untitled'}"? This cannot be undone.`))return;
+  const sib=b.vid?scenesOf(b.vid).find(x=>x!==b):null;
   if(pending===b)pending=null;
   dropUrl(b);await dbDel(b.id);boards=boards.filter(x=>x.id!==b.id);
   picked.delete(b.id);cmpIds=cmpIds.filter(i=>i!==b.id);
   if(!boards.length){const n=newBoard('Untitled template');boards=[n];localStorage.setItem('tre_starter',n.id);await dbPut(n);}
-  if(cur.id===b.id)setCurrent(boards[0]);
+  if(cur.id===b.id)setCurrent(sib||boards[0]);
+  render(true);
+}
+async function deleteVideo(vid){
+  const sc=scenesOf(vid);
+  if(!confirm(`Delete the video "${(sc[0]&&sc[0].vname)||'Video'}" and its ${sc.length} scene${sc.length===1?'':'s'}? This cannot be undone.`))return;
+  for(const b of sc){
+    if(pending===b)pending=null;
+    dropUrl(b);await dbDel(b.id);picked.delete(b.id);cmpIds=cmpIds.filter(i=>i!==b.id);
+  }
+  boards=boards.filter(b=>b.vid!==vid);
+  if(!boards.length){const n=newBoard('Untitled template');boards=[n];localStorage.setItem('tre_starter',n.id);await dbPut(n);}
+  if(!boards.includes(cur))setCurrent(boards[0]);
   render(true);
 }
 
@@ -1496,6 +1677,11 @@ document.addEventListener('keydown',e=>{
   if(view!=='editor')return;
   const sel=getSel();
   if(e.key==='Escape'){selectRegion(null);return;}
+  if(!mod&&cur.vid&&(e.key==='['||e.key===']')){
+    const sc=scenesOf(cur.vid),n=sc[sc.indexOf(cur)+(e.key===']'?1:-1)];
+    if(n)switchScene(n);
+    return;
+  }
   if(!mod&&k==='e'){mode='edit';selId=null;render(true);return;}
   if(!mod&&k==='v'){mode='view';selId=null;render(true);return;}
   if(!mod&&(e.key==='+'||e.key==='='))setZoom(effZoom()*1.2);
@@ -1516,6 +1702,7 @@ document.addEventListener('keydown',e=>{
   else if(mod&&k==='d'){e.preventDefault();clip=JSON.parse(JSON.stringify(sel));pasteRegion();}
   else if(mod&&k==='c'){clip=JSON.parse(JSON.stringify(sel));toast('Element copied');}
 });
+
 /* ===== per-element colours ===== */
 const regColor=(b,r)=>r.color||typeColor(b,r.type);
 const hex2rgb=h=>[1,3,5].map(i=>parseInt(h.slice(i,i+2),16));
@@ -1571,6 +1758,7 @@ document.addEventListener('click',e=>{
   const cp=$('#cp');
   if(cp&&!cp.contains(e.target))cp.classList.remove('open');
 });
+
 /* ===== required / optional toggle ===== */
 $('#panel').addEventListener('click',e=>{
   const t=e.target.closest('[data-req]');
@@ -1582,6 +1770,135 @@ $('#panel').addEventListener('click',e=>{
   t.textContent=f.req?'Required':'Optional';
   checkpoint();
 });
+
+/* =========================================================
+   VIDEO TEMPLATES  (scenes = frames captured from a video)
+   ========================================================= */
+function newVideoModal(){
+  openModal({title:'New video template',
+    body:`<label class="ml">Video name<input id="vName" value="New video"></label>
+    <label class="ml">Video link (optional, a direct .mp4 URL so teammates can play it)<input id="vUrl" placeholder="https://…/video.mp4"></label>
+    <p class="mhint">Next you'll pick the video file on your computer and capture frames as scenes. Only the frames are saved, never the video file.</p>`,
+    actions:[{text:'Cancel'},{text:'Create',cls:'primary',fn:async m=>{
+      const b=newBoard('Scene 1');
+      b.vid=uid();b.vname=$('#vName',m).value.trim()||'New video';
+      const u=$('#vUrl',m).value.trim();b.vurl=/^https?:\/\//i.test(u)?u:'';
+      b.t=0;
+      boards.push(b);sortBoards();await dbPut(b);
+      setCurrent(b);view='editor';mode='edit';render(true);
+      setTimeout(captureModal,60);
+    }}]});
+}
+
+async function grabFrame(v){
+  const vw=v.videoWidth,vh=v.videoHeight;
+  if(!vw||!vh)throw new Error('Load a video first');
+  const k=Math.min(1,1600/Math.max(vw,vh)),c=document.createElement('canvas');
+  c.width=Math.round(vw*k);c.height=Math.round(vh*k);
+  c.getContext('2d').drawImage(v,0,0,c.width,c.height);
+  let blob;
+  try{blob=await new Promise((res,rej)=>c.toBlob(b=>b?res(b):rej(new Error('encode')),'image/jpeg',.9));}
+  catch(e){throw new Error('Could not read the frame. If you used a link, load the file from your computer instead.');}
+  const p=await processImage(blob);
+  p.ow=vw;p.oh=vh; // canvas size = real video resolution
+  return p;
+}
+
+async function addScene(base,p,t,copyBoxes){
+  let target;
+  if(!base.image){target=base;}
+  else{
+    target=newBoard('Scene '+(scenesOf(base.vid).length+1));
+    Object.assign(target,{vid:base.vid,vname:base.vname,vurl:base.vurl,types:[...base.types],fieldNames:[...(base.fieldNames||[])],canvasAuto:base.canvasAuto});
+    if(base.canvasAuto===false)target.canvas={...base.canvas};
+    if(copyBoxes)target.regions=JSON.parse(JSON.stringify(base.regions)).map(r=>({...r,id:uid()}));
+    boards.push(target);
+  }
+  target.t=t;
+  applyImage(target,p);
+  await dbPut(target);
+  sortBoards();
+  if(target===cur){imgVersion++;zoom='fit';render(true);}
+  else renderStrip();
+}
+
+function captureModal(){
+  if(!cur||!cur.vid)return;
+  const base=cur;
+  let objUrl=null,busy=false,count=0,closed=false;
+  const m=openModal({title:'Capture frames',wide:true,
+    body:`<p class="mhint">Choose the video from your computer (it only plays here and is never uploaded). Scrub to a moment and capture it as a scene. Only the frames are saved.</p>
+    <div class="row" style="margin-bottom:10px;align-items:center"><button class="btn sm" id="cpFile">Choose video file…</button>${base.vurl?'<button class="btn sm" id="cpLink">Use the video link</button>':''}<span class="mhint" id="cpName" style="margin:0"></span></div>
+    <video id="cpVid" controls playsinline muted preload="auto" style="width:100%;max-height:42vh;background:#000;border-radius:8px"></video>
+    <div class="cap-ctl"><button class="btn sm" data-cp2="-1">−1s</button><button class="btn sm" data-cp2="-0.1">−0.1s</button><span class="cap-time" id="cpTime">0:00</span><button class="btn sm" data-cp2="0.1">+0.1s</button><button class="btn sm" data-cp2="1">+1s</button><button class="btn sm primary" id="cpGrab" disabled>Capture this frame</button></div>
+    <div class="cap-ctl"><label class="opt">Or capture every <input id="cpStep" type="number" min="0.5" step="0.5" value="2" style="width:64px"> s</label><button class="btn sm" id="cpAuto" disabled>Capture all</button><label class="opt"><input type="checkbox" id="cpCopy"> Copy boxes from the current scene</label></div>
+    <div class="mhint" id="cpList">No frames captured yet.</div>`,
+    actions:[{text:'Done',cls:'primary'}]});
+  const v=$('#cpVid',m),grab=$('#cpGrab',m),auto=$('#cpAuto',m);
+  const upd=()=>{$('#cpTime',m).textContent=fmtT(Math.round((v.currentTime||0)*10)/10);};
+  ['timeupdate','seeked','loadedmetadata'].forEach(ev=>v.addEventListener(ev,upd));
+  v.addEventListener('loadedmetadata',()=>{grab.disabled=auto.disabled=false;});
+  v.addEventListener('error',()=>{grab.disabled=auto.disabled=true;toast('Could not load that video. Links need to allow cross-site access, so try the file instead');});
+  $('#cpFile',m).onclick=()=>pickFiles(false,fs=>{
+    if(objUrl)URL.revokeObjectURL(objUrl);
+    objUrl=URL.createObjectURL(fs[0]);
+    v.removeAttribute('crossorigin');v.src=objUrl;
+    $('#cpName',m).textContent=fs[0].name;grab.disabled=auto.disabled=true;
+  },'video/*');
+  const lk=$('#cpLink',m);
+  if(lk)lk.onclick=()=>{v.crossOrigin='anonymous';v.src=base.vurl;$('#cpName',m).textContent='Using the video link';grab.disabled=auto.disabled=true;};
+  m.addEventListener('click',e=>{
+    const s=e.target.closest('[data-cp2]');
+    if(s&&v.duration){v.pause();v.currentTime=clamp(v.currentTime+parseFloat(s.dataset.cp2),0,v.duration);}
+  });
+  const seekTo=t=>new Promise(res=>{
+    if(Math.abs(v.currentTime-t)<0.02)return res();
+    let done=false;
+    const f=()=>{if(done)return;done=true;v.removeEventListener('seeked',f);setTimeout(res,80);};
+    v.addEventListener('seeked',f);setTimeout(f,4000);v.currentTime=t;
+  });
+  const shoot=async()=>{
+    const t=Math.round(v.currentTime*10)/10;
+    let p;
+    try{p=await grabFrame(v);}catch(err){toast(err.message);return false;}
+    await addScene(base,p,t,$('#cpCopy',m).checked);
+    count++;
+    $('#cpList',m).textContent=`${count} frame${count===1?'':'s'} captured. Latest at ${fmtT(t)}.`;
+    return true;
+  };
+  grab.onclick=async()=>{
+    if(busy)return;busy=true;grab.disabled=true;
+    await shoot();
+    grab.disabled=false;busy=false;
+  };
+  auto.onclick=async()=>{
+    if(busy||!isFinite(v.duration))return;
+    const step=Math.max(.5,parseFloat($('#cpStep',m).value)||2);
+    const times=[];for(let t=0;t<v.duration-.05&&times.length<40;t+=step)times.push(t);
+    if(times.length>12&&!confirm(`This will create ${times.length} scenes. Continue?`))return;
+    busy=true;grab.disabled=auto.disabled=true;v.pause();
+    for(const t of times){
+      if(closed)break;
+      await seekTo(t);
+      if(!(await shoot()))break;
+    }
+    grab.disabled=auto.disabled=false;busy=false;
+  };
+  onModalClose=()=>{closed=true;try{v.pause();}catch(e){}if(objUrl)URL.revokeObjectURL(objUrl);renderStrip();};
+}
+
+function playModal(){
+  if(!cur.vurl)return;
+  const t0=cur.t||0;
+  const m=openModal({title:`${cur.vname||'Video'} · scene at ${fmtT(t0)}`,wide:true,
+    body:`<video id="plVid" controls playsinline src="${esc(cur.vurl)}" style="width:100%;max-height:60vh;background:#000;border-radius:8px"></video>
+    <p class="mhint" style="margin-top:8px">If nothing plays, the link isn't a direct video file. YouTube, Drive and similar pages can't be played here.</p>`,
+    actions:[{text:'Close',cls:'primary'}]});
+  const v=$('#plVid',m);
+  v.addEventListener('loadedmetadata',()=>{try{v.currentTime=t0;}catch(e){}},{once:true});
+  onModalClose=()=>{try{v.pause();}catch(e){}};
+}
+
 boot();
 </script>
 </body>
