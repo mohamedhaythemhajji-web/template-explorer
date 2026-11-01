@@ -968,7 +968,7 @@ function renderList(){
     :`<div class="empty-sel">${q?'No matches.':'Nothing mapped yet.'}</div>`;
 }
 function detailHTML(r,b){
-  const chips=splitFeed(r.feed),p=pxOf(r,b),col=typeColor(b,r.type),fields=(r.fields||[]).filter(f=>f.k||f.v);
+  const chips=splitFeed(r.feed),p=pxOf(r,b),col=regColor(b,r),fields=(r.fields||[]).filter(f=>f.k||f.v);
   return `<div class="detail-head"><div class="num-big" style="background:${col}">${esc(r.num||'·')}</div><h3>${esc(r.label||'Untitled element')}</h3></div>
   ${chips.length?`<div class="chips">${chips.map(c=>`<button class="chip" data-copy="${esc(c)}" title="Click to copy">${esc(c)}</button>`).join('')}</div>`:''}
   <div class="tagrow"><span class="tag" style="background:${col}1f;color:${col}">${esc(r.type||'Element')}</span>${r.concept?`<span class="tag t-concept">${esc(r.concept)}</span>`:''}</div>
