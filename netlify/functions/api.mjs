@@ -31,7 +31,7 @@ function sanitizeRegion(r) {
     notes: str(r.notes, 5000),
     color: /^#[0-9a-f]{6}$/i.test(r.color) ? r.color : '',
     fields: (Array.isArray(r.fields) ? r.fields : []).slice(0, 50)
-      .map(f => ({ k: str(f && f.k, 100), v: str(f && f.v, 1000) }))
+      .map(f => ({ k: str(f && f.k, 100), v: str(f && f.v, 1000), req: !!(f && f.req) }))
   };
 }
 function sanitizeBoard(b) {

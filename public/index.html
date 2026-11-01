@@ -247,6 +247,16 @@ input.board-name:focus{outline:0;border-color:var(--blue);background:#fff}
 .cp-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px;padding-top:9px;border-top:1px solid #f0f1f5}
 .cp-foot label{display:flex;align-items:center;gap:7px;margin:0;font-size:12px;font-weight:600;color:var(--muted)}
 .cp-foot input[type=color]{width:34px;height:24px;padding:0;margin:0;border:1px solid var(--line);border-radius:5px;background:none;cursor:pointer}
+/* required / optional fields */
+.kvrow{grid-template-columns:1fr 1.2fr auto 26px}
+.reqbtn{border:1px solid var(--line);background:#f1f2f6;color:#6b7280;border-radius:20px;padding:0 9px;min-width:68px;font-size:10.5px;font-weight:700;cursor:pointer;transition:background .15s,color .15s,border-color .15s}
+.reqbtn:hover{border-color:#cfd4de}
+.reqbtn.on{background:#fdecec;color:#b42318;border-color:#f6c9c4}
+.reqtag,.opttag{font-style:normal;font-size:9.5px;font-weight:700;padding:1px 7px;border-radius:10px;margin-left:7px;vertical-align:1px}
+.reqtag{background:#fdecec;color:#b42318}
+.opttag{background:#f1f2f6;color:#6b7280}
+
+
 </style>
 </head>
 <body>
@@ -991,7 +1001,7 @@ function detailHTML(r,b){
   <div class="tagrow"><span class="tag" style="background:${col}1f;color:${col}">${esc(r.type||'Element')}</span>${r.concept?`<span class="tag t-concept">${esc(r.concept)}</span>`:''}</div>
   <div class="spec"><div><span>Container</span><b>${p.w} × ${p.h} px</b></div><div><span>Ratio</span><b>${ratioStr(p.w,p.h)}</b></div>
     <div><span>Position</span><b>${p.x}, ${p.y}</b></div><div><span>Canvas</span><b>${b.canvas.w} × ${b.canvas.h}</b></div></div>
-  ${fields.map(f=>`<div class="kv"><span>${esc(f.k)}</span><b>${esc(f.v)}</b></div>`).join('')}
+  ${fields.map(f=>`<div class="kv"><span>${esc(f.k)}${f.k?(f.req?'<em class="reqtag">Required</em>':'<em class="opttag">Optional</em>'):''}</span><b>${esc(f.v)}</b></div>`).join('')}
   ${r.notes?`<p class="notes">${esc(r.notes)}</p>`:''}`;
 }
 function formHTML(r){
@@ -1012,7 +1022,7 @@ function formHTML(r){
   <div class="rowsb"><label class="inl"><input type="checkbox" data-lock${prefs.lock?' checked':''}> Lock ratio</label>
     <select data-ratio><option value="">Set ratio…</option>${['1:1','4:5','5:4','3:4','4:3','9:16','16:9','2:1','1.91:1'].map(x=>`<option>${x}</option>`).join('')}</select></div>
   <div class="subhead"><span>Extra fields</span><button data-act="addField">+ Add</button></div>
-  ${(r.fields||[]).map((f,i)=>`<div class="kvrow"><input data-fk="${i}" list="dlKeys" placeholder="Name" value="${esc(f.k)}"><input data-fv="${i}" placeholder="Value" value="${esc(f.v)}"><button class="x" data-act="rmField" data-i="${i}" title="Remove">✕</button></div>`).join('')}
+  ${(r.fields||[]).map((f,i)=>`<div class="kvrow"><input data-fk="${i}" list="dlKeys" placeholder="Name" value="${esc(f.k)}"><input data-fv="${i}" placeholder="Value" value="${esc(f.v)}"><button type="button" class="reqbtn${f.req?' on':''}" data-req="${i}" title="Click to mark this field required or optional">${f.req?'Required':'Optional'}</button><button class="x" data-act="rmField" data-i="${i}" title="Remove">✕</button></div>`).join('')}
   <label style="margin-top:12px">Notes<textarea data-f="notes" rows="3" placeholder="Crop rules, fallbacks, AI fill…">${esc(r.notes)}</textarea></label>
   <div class="row"><button class="btn sm" data-act="dupRegion">Duplicate</button><button class="btn sm ghost danger" data-act="delRegion">Delete element</button></div></div>`;
 }
@@ -1189,7 +1199,7 @@ function grpHTML(g){
   });
   if(on)h+=bs.map((b,i)=>{const rs=g.per[i];if(!rs)return '';
     return rs.map(r=>{const p=pxOf(r,b);return `<div class="xtra"><b>${esc(b.name)}</b> · ${esc(r.type)}${r.concept?' · '+esc(r.concept):''} · ${p.w}×${p.h} px (${ratioStr(p.w,p.h)})
-      ${(r.fields||[]).filter(f=>f.k||f.v).map(f=>`<br>${esc(f.k)}: ${esc(f.v)}`).join('')}${r.notes?`<br><i>${esc(r.notes)}</i>`:''}</div>`;}).join('');}).join('');
+      ${(r.fields||[]).filter(f=>f.k||f.v).map(f=>`<br>${esc(f.k)}${f.req?' (required)':''}: ${esc(f.v)}`).join('')}${r.notes?`<br><i>${esc(r.notes)}</i>`:''}</div>`;}).join('');}).join('');
   return h+'</div>';
 }
 
@@ -1312,7 +1322,7 @@ async function serializeBoard(b){const o=clean(b);o.image=b.image?await blobToDa
 function tableRows(b){
   const head=['#','Label','Type','Feed columns','Concept','X (px)','Y (px)','Width (px)','Height (px)','Ratio','Extra fields','Notes'];
   return [head,...b.regions.map(r=>{const p=pxOf(r,b);return [r.num,r.label,r.type,r.feed,r.concept,p.x,p.y,p.w,p.h,ratioStr(p.w,p.h),
-    (r.fields||[]).filter(f=>f.k||f.v).map(f=>f.k+': '+f.v).join('; '),(r.notes||'').replace(/\n/g,' ')];})];
+    (r.fields||[]).filter(f=>f.k||f.v).map(f=>f.k+(f.req?' (required)':'')+': '+f.v).join('; '),(r.notes||'').replace(/\n/g,' ')];})];
 }
 const csvCell=v=>{const s=String(v??'');return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;};
 const exporters={
@@ -1561,7 +1571,17 @@ document.addEventListener('click',e=>{
   const cp=$('#cp');
   if(cp&&!cp.contains(e.target))cp.classList.remove('open');
 });
-
+/* ===== required / optional toggle ===== */
+$('#panel').addEventListener('click',e=>{
+  const t=e.target.closest('[data-req]');
+  if(!t||view!=='editor'||mode!=='edit')return;
+  const r=getSel();if(!r)return;
+  const f=r.fields[+t.dataset.req];if(!f)return;
+  f.req=!f.req;
+  t.classList.toggle('on',f.req);
+  t.textContent=f.req?'Required':'Optional';
+  checkpoint();
+});
 boot();
 </script>
 </body>
