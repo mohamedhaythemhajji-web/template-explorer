@@ -221,6 +221,15 @@ input.board-name:focus{outline:0;border-color:var(--blue);background:#fff}
   #center{flex:0 0 auto;max-height:58vh}
   .brand h1{display:none}
 }
+/* element colours */
+.swrow{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin:2px 0 14px}
+.swl{width:100%;font-size:11px;font-weight:650;color:var(--muted)}
+.sw{width:24px;height:24px;padding:0;border:2px solid #fff;border-radius:8px;background:var(--s);box-shadow:0 0 0 1px var(--line);cursor:pointer;transition:transform .12s,box-shadow .12s}
+.sw:hover{transform:scale(1.15)}
+.sw.on{box-shadow:0 0 0 2px var(--ink)}
+.sw.auto{background:#fff;color:var(--muted);font-size:13px;font-weight:700;line-height:1;display:grid;place-items:center}
+.region{transition:opacity .18s,border-color .15s}
+.badge,.num-big,.list-item .num,.tag{transition:background .15s,color .15s}
 </style>
 </head>
 <body>
@@ -816,7 +825,7 @@ function setRect(el,r,b=cur){
 }
 function refreshRegionEl(r){
   const el=$(`.region[data-id="${r.id}"]`);if(!el)return;
-  el.style.setProperty('--c',typeColor(cur,r.type));
+  el.style.setProperty('--c',regColor(cur,r));
   el.title=[r.label,r.feed].filter(Boolean).join(' — ');
   $('.badge b',el).textContent=r.num||'';$('.badge i',el).textContent=r.label||'';
 }
@@ -831,7 +840,7 @@ function snapV(v,axis){
 function regionEl(reg,b,opt={}){
   const d=document.createElement('div');
   d.className='region';d.dataset.id=reg.id;d.dataset.key=keyOf(reg);
-  d.style.setProperty('--c',typeColor(b,reg.type));
+  d.style.setProperty('--c',regColor(b,reg));
   d.title=[reg.label,reg.feed].filter(Boolean).join(' — ');
   d.innerHTML=`<span class="badge"><b>${esc(reg.num||'')}</b><i>${esc(reg.label||'')}</i></span><span class="dim"></span>`;
   setRect(d,reg,b);
@@ -954,12 +963,12 @@ function renderList(){
   const q=listFilter.trim().toLowerCase();
   const items=cur.regions.filter(r=>!q||[r.num,r.label,r.feed,r.type,r.concept,r.notes].join(' ').toLowerCase().includes(q));
   el.innerHTML=items.length?items.map(r=>`<div class="list-item${r.id===selId?' is-selected':''}" data-id="${r.id}">
-    <span class="num" style="background:${typeColor(cur,r.type)}">${esc(r.num||'')}</span>
+    <span class="num" style="background:${regColor(cur,r)}">${esc(r.num||'')}</span>
     <div style="min-width:0"><div class="li-label">${esc(r.label||'Untitled')}</div><div class="li-feed">${esc(r.feed||'—')}</div></div></div>`).join('')
     :`<div class="empty-sel">${q?'No matches.':'Nothing mapped yet.'}</div>`;
 }
 function detailHTML(r,b){
-  const chips=splitFeed(r.feed),p=pxOf(r,b),col=typeColor(b,r.type),fields=(r.fields||[]).filter(f=>f.k||f.v);
+  const chips=splitFeed(r.feed),p=pxOf(r,b),col=regColor(b,r),fields=(r.fields||[]).filter(f=>f.k||f.v);
   return `<div class="detail-head"><div class="num-big" style="background:${col}">${esc(r.num||'·')}</div><h3>${esc(r.label||'Untitled element')}</h3></div>
   ${chips.length?`<div class="chips">${chips.map(c=>`<button class="chip" data-copy="${esc(c)}" title="Click to copy">${esc(c)}</button>`).join('')}</div>`:''}
   <div class="tagrow"><span class="tag" style="background:${col}1f;color:${col}">${esc(r.type||'Element')}</span>${r.concept?`<span class="tag t-concept">${esc(r.concept)}</span>`:''}</div>
@@ -975,7 +984,7 @@ function formHTML(r){
   return `<div class="form">
   <div class="two"><label>Number<input data-f="num" value="${esc(r.num)}"></label>
     <label>Type<select data-f="type">${types.map(t=>`<option${t===r.type?' selected':''}>${esc(t)}</option>`).join('')}</select></label></div>
-  <label>Label<input data-f="label" value="${esc(r.label)}" placeholder="e.g. Headline"></label>
+  ${swatchHTML(r)}<label>Label<input data-f="label" value="${esc(r.label)}" placeholder="e.g. Headline"></label>
   <label>Feed column(s)<input data-f="feed" value="${esc(r.feed)}" placeholder="e.g. Headline30, PromoCode15"></label>
   <label>Concept / variant<input data-f="concept" list="dlConcept" value="${esc(r.concept)}" placeholder="Both / Grid1 / Grid4"></label>
   <datalist id="dlConcept">${concepts.map(c=>`<option value="${esc(c)}">`).join('')}</datalist>
@@ -1307,7 +1316,7 @@ const exporters={
     const x=c.getContext('2d');x.drawImage(img,0,0);
     const s=Math.max(1,c.width/900);x.textAlign='center';x.textBaseline='middle';x.font=`700 ${12*s}px sans-serif`;
     cur.regions.forEach(r=>{
-      const col=typeColor(cur,r.type),rx=r.x/100*c.width,ry=r.y/100*c.height,rw=r.w/100*c.width,rh=r.h/100*c.height;
+      const col=regColor(cur,r),rx=r.x/100*c.width,ry=r.y/100*c.height,rw=r.w/100*c.width,rh=r.h/100*c.height;
       x.lineWidth=2*s;x.strokeStyle=col;x.fillStyle=col+'26';x.fillRect(rx,ry,rw,rh);x.strokeRect(rx,ry,rw,rh);
       x.beginPath();x.arc(rx,ry,11*s,0,Math.PI*2);x.fillStyle=col;x.fill();x.strokeStyle='#fff';x.lineWidth=2*s;x.stroke();
       x.fillStyle='#fff';x.fillText(String(r.num||''),rx,ry+.5*s);
@@ -1480,7 +1489,26 @@ document.addEventListener('keydown',e=>{
   else if(mod&&k==='d'){e.preventDefault();clip=JSON.parse(JSON.stringify(sel));pasteRegion();}
   else if(mod&&k==='c'){clip=JSON.parse(JSON.stringify(sel));toast('Element copied');}
 });
-
+/* ===== per-element colours ===== */
+const COLORS=['#1a5cff','#0ca5b0','#12a150','#84a30d','#e8820c','#dc2626','#d6336c','#9333ea','#7048e8','#a16207','#475569','#12141a'];
+const regColor=(b,r)=>r.color||regColor(b,r);
+function swatchHTML(r){
+  return `<div class="swrow" id="swrow"><span class="swl">Colour</span>`
+    +COLORS.map(c=>`<button type="button" class="sw${c===r.color?' on':''}" data-c="${c}" style="--s:${c}" title="${c}"></button>`).join('')
+    +`<button type="button" class="sw auto${r.color?'':' on'}" data-c="" title="Reset to the type colour">↺</button></div>`;
+}
+$('#panel').addEventListener('click',e=>{
+  const s=e.target.closest('.sw');
+  if(!s||view!=='editor'||mode!=='edit')return;
+  const r=getSel();if(!r)return;
+  r.color=s.dataset.c||'';
+  $$('#swrow .sw').forEach(x=>x.classList.toggle('on',x===s));
+  refreshRegionEl(r);
+  const n=$(`.list-item[data-id="${r.id}"] .num`);
+  if(n)n.style.background=regColor(cur,r);
+  s.blur();
+  checkpoint();
+});
 boot();
 </script>
 </body>
