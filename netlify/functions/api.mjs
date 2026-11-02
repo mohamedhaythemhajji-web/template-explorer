@@ -40,6 +40,7 @@ function sanitizeRegion(r) {
       .map(f => ({ k: str(f && f.k, 100), v: str(f && f.v, 1000), req: !!(f && f.req) }))
   };
 }
+const pct = v => Math.min(100, Math.max(0, num(v)));
 function sanitizeBoard(b) {
   if (!b || typeof b !== 'object') return null;
   const c = b.canvas || {};
@@ -59,8 +60,17 @@ function sanitizeBoard(b) {
     t: Math.max(0, num(b.t)),
     regions: (Array.isArray(b.regions) ? b.regions : []).slice(0, 1000)
       .filter(r => r && typeof r === 'object').map(sanitizeRegion),
-    updated: Date.now()
-  };
+arrows: (Array.isArray(b.arrows) ? b.arrows : []).slice(0, 200)
+      .filter(a => a && typeof a === 'object')
+      .map(a => ({
+        id: str(a.id, 40), from: str(a.from, 40), to: str(a.to, 40),
+        x1: pct(a.x1), y1: pct(a.y1), x2: pct(a.x2), y2: pct(a.y2),
+        color: /^#[0-9a-f]{6}$/i.test(a.color) ? a.color : '',
+        label: str(a.label, 120),
+        curve: Math.max(-1, Math.min(1, num(a.curve))),
+        dash: !!a.dash
+      })),
+    updated: Date.now()  };
 }
 
 /* store the doc, and mirror the small fields into blob metadata so the

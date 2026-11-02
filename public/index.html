@@ -280,6 +280,12 @@ input.board-name:focus{outline:0;border-color:var(--blue);background:#fff}
 .region.shaped.is-selected path{fill-opacity:.24;stroke-width:2.5}
 .overlay.edit .region.shaped path{cursor:move}
 .livefree{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+/* arrows */
+.arrows{position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none;z-index:6}
+.arrows .hit{pointer-events:stroke;cursor:pointer}
+.arr-ends{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;margin-bottom:12px}
+.arr-ends b{background:#f1f2f6;border-radius:6px;padding:2px 8px;font-weight:650}
+.arr-ends span{color:var(--muted)}
 </style>
 </head>
 <body>
@@ -1982,7 +1988,287 @@ function playModal(){
   v.addEventListener('loadedmetadata',()=>{try{v.currentTime=t0;}catch(e){}},{once:true});
   onModalClose=()=>{try{v.pause();}catch(e){}};
 }
+/* =========================================================
+   ARROWS  (connect one element to another)
+   ========================================================= */
+let selArrow='';
+const ARROW_COL='#d6336c';
+const ARROW_COLORS=['#d6336c','#e8820c','#12a150','#1a5cff','#7048e8','#0ca5b0','#12141a'];
+const getArrow=()=>selId?null:((cur&&cur.arrows)||[]).find(a=>a.id===selArrow)||null;
+const pctPt=(e,r)=>({x:clamp((e.clientX-r.left)/r.width*100,0,100),y:clamp((e.clientY-r.top)/r.height*100,0,100)});
 
+function sv(tag,at,parent){
+  const n=document.createElementNS(SVGNS,tag);
+  for(const k in at)n.setAttribute(k,at[k]);
+  if(parent)parent.appendChild(n);
+  return n;
+}
+function hitRegion(p,b=cur){
+  let best=null,ba=1e9;
+  b.regions.forEach(r=>{
+    if(p.x>=r.x&&p.x<=r.x+r.w&&p.y>=r.y&&p.y<=r.y+r.h&&r.w*r.h<ba){best=r;ba=r.w*r.h;}
+  });
+  return best?best.id:'';
+}
+function edgePt(R,p){
+  const cx=R.x+R.w/2,cy=R.y+R.h/2,dx=p[0]-cx,dy=p[1]-cy;
+  if(!dx&&!dy)return [cx,cy];
+  const t=Math.min(dx?R.w/2/Math.abs(dx):Infinity,dy?R.h/2/Math.abs(dy):Infinity);
+  return t>=1?[cx,cy]:[cx+dx*t,cy+dy*t];
+}
+/* geometry in W x H units (the image's pixel size), so line and head scale together */
+function arrowShape(a,b,W,H){
+  const rc=id=>{const r=id&&b.regions.find(q=>q.id===id);return r?{x:r.x/100*W,y:r.y/100*H,w:r.w/100*W,h:r.h/100*H}:null;};
+  const A=rc(a.from),B=rc(a.to);
+  const cA=A?[A.x+A.w/2,A.y+A.h/2]:[a.x1/100*W,a.y1/100*H];
+  const cB=B?[B.x+B.w/2,B.y+B.h/2]:[a.x2/100*W,a.y2/100*H];
+  const dx=cB[0]-cA[0],dy=cB[1]-cA[1],k=a.curve||0;
+  const c=[(cA[0]+cB[0])/2-dy*k,(cA[1]+cB[1])/2+dx*k];
+  const sw=Math.max(1.5,W*.004);
+  const s=A?edgePt(A,c):cA;
+  let e=B?edgePt(B,c):cB;
+  let ux=e[0]-c[0],uy=e[1]-c[1],ul=Math.hypot(ux,uy);
+  if(!ul){ux=dx;uy=dy;ul=Math.hypot(ux,uy);}
+  if(!ul)return null;
+  ux/=ul;uy/=ul;
+  if(B)e=[e[0]-ux*sw*1.2,e[1]-uy*sw*1.2];
+  if(Math.hypot(e[0]-s[0],e[1]-s[1])<sw*6)return null;
+  const hl=sw*5.5,hw=sw*2.8,bs=[e[0]-ux*hl,e[1]-uy*hl],nx=-uy,ny=ux;
+  return {
+    sw,
+    d:`M${s[0]} ${s[1]}Q${c[0]} ${c[1]} ${bs[0]} ${bs[1]}`,
+    head:`${e[0]},${e[1]} ${bs[0]+nx*hw},${bs[1]+ny*hw} ${bs[0]-nx*hw},${bs[1]-ny*hw}`,
+    lx:.25*s[0]+.5*c[0]+.25*e[0], ly:.25*s[1]+.5*c[1]+.25*e[1]
+  };
+}
+function arrowEls(parent,a,b,W,H,opt={}){
+  const g=arrowShape(a,b,W,H);if(!g)return;
+  const col=a.color||ARROW_COL,sw=g.sw,grp=sv('g',{},parent);
+  if(opt.sel)sv('path',{d:g.d,fill:'none',stroke:'#1a5cff','stroke-opacity':.35,'stroke-width':sw*4,'stroke-linecap':'round'},grp);
+  sv('path',{d:g.d,fill:'none',stroke:'#fff','stroke-opacity':.9,'stroke-width':sw*2.4,'stroke-linecap':'round'},grp);
+  sv('polygon',{points:g.head,fill:'#fff',stroke:'#fff','stroke-opacity':.9,'stroke-width':sw*1.4,'stroke-linejoin':'round'},grp);
+  const line={d:g.d,fill:'none',stroke:col,'stroke-width':sw,'stroke-linecap':'round'};
+  if(a.dash)line['stroke-dasharray']=`${sw*3} ${sw*2.2}`;
+  sv('path',line,grp);
+  sv('polygon',{points:g.head,fill:col,stroke:col,'stroke-width':sw*.4,'stroke-linejoin':'round'},grp);
+  if(a.label){
+    const t=sv('text',{x:g.lx,y:g.ly-sw*2.6,'text-anchor':'middle','font-size':W*.02,'font-weight':700,'font-family':'sans-serif',fill:col,
+      style:`paint-order:stroke;stroke:#fff;stroke-width:${W*.006}px;stroke-linejoin:round`},grp);
+    t.textContent=a.label;
+  }
+  if(opt.edit){
+    const hit=sv('path',{d:g.d,class:'hit',fill:'none',stroke:'transparent','stroke-width':Math.max(sw*5,W*.012)},grp);
+    hit.addEventListener('pointerdown',ev=>{ev.stopPropagation();ev.preventDefault();selectArrow(a.id);});
+  }
+}
+function drawArrows(ov,b){
+  const old=ov.querySelector(':scope > svg.arrows');if(old)old.remove();
+  const list=b.arrows||[];if(!list.length)return;
+  const W=b.imgW||b.canvas.w,H=b.imgH||b.canvas.h;
+  const ed=view==='editor'&&mode==='edit'&&b===cur;
+  const sel=ed&&!selId?selArrow:'';
+  const s=sv('svg',{class:'arrows',viewBox:`0 0 ${W} ${H}`,preserveAspectRatio:'none'},ov);
+  list.forEach(a=>arrowEls(s,a,b,W,H,{edit:ed,sel:sel===a.id}));
+}
+function refreshArrows(){const ov=$('#overlay');if(ov&&cur&&view==='editor')drawArrows(ov,cur);}
+
+function selectArrow(id){selId=null;selArrow=id;updateSelectionClasses();renderPanel();refreshArrows();}
+function removeArrow(id){
+  cur.arrows=(cur.arrows||[]).filter(a=>a.id!==id);selArrow='';
+  checkpoint();renderRegions();renderPanel();toast('Arrow deleted · Ctrl+Z to undo');
+}
+
+/* ---- drawing an arrow (drag from one element to another) ---- */
+function startArrow(e,ov,rect){
+  const p=pctPt(e,rect);
+  const svg=document.createElementNS(SVGNS,'svg');
+  svg.setAttribute('class','livefree');svg.setAttribute('viewBox',`0 0 ${rect.width} ${rect.height}`);
+  ov.appendChild(svg);
+  const st={rect,x1:p.x,y1:p.y,from:hitRegion(p)};
+  try{ov.setPointerCapture(e.pointerId);}catch(_){}
+  const mv=ev=>{
+    const q=pctPt(ev,rect);
+    let to=hitRegion(q);if(to===st.from)to='';
+    svg.innerHTML='';
+    arrowEls(svg,{from:st.from,to,x1:st.x1,y1:st.y1,x2:q.x,y2:q.y,curve:0},cur,rect.width,rect.height,{});
+  };
+  const up=ev=>{
+    window.removeEventListener('pointermove',mv);window.removeEventListener('pointerup',up);window.removeEventListener('pointercancel',up);
+    svg.remove();
+    if(ev.type!=='pointercancel')finishArrow(st,ev);
+  };
+  window.addEventListener('pointermove',mv);window.addEventListener('pointerup',up);window.addEventListener('pointercancel',up);
+}
+function finishArrow(st,ev){
+  const p=pctPt(ev,st.rect);
+  const px=Math.hypot((p.x-st.x1)/100*st.rect.width,(p.y-st.y1)/100*st.rect.height);
+  if(px<14){selectRegion(st.from||null);return;}   // a short click just selects
+  let from=st.from,to=hitRegion(p);
+  if(to&&to===from){from='';to='';}                  // dragged inside one element: free arrow
+  const a={id:uid(),from,to,x1:st.x1,y1:st.y1,x2:p.x,y2:p.y,color:'',label:'',curve:0,dash:false};
+  (cur.arrows=cur.arrows||[]).push(a);
+  selId=null;selArrow=a.id;
+  checkpoint();renderRegions();renderPanel();
+  const f=$('#selection [data-ar="label"]');if(f)f.focus();
+}
+/* In Arrow mode every press on the image starts an arrow (even on top of an element) */
+$('#stage').addEventListener('pointerdown',e=>{
+  if(tool!=='arrow'||view!=='editor'||mode!=='edit'||e.button!==0)return;
+  if(e.target.closest&&e.target.closest('.hit'))return;
+  const ov=$('#overlay');if(!ov||!ov.contains(e.target))return;
+  e.stopPropagation();e.preventDefault();
+  startArrow(e,ov,ov.getBoundingClientRect());
+},true);
+
+/* ---- side panel form for the selected arrow ---- */
+function arrowFormHTML(a){
+  const col=a.color||ARROW_COL;
+  const nm=id=>{const r=id&&cur.regions.find(x=>x.id===id);return r?('#'+(r.num||'')+' '+(r.label||'Untitled')):'free point';};
+  return `<div class="form">
+    <div class="arr-ends"><b>${esc(nm(a.from))}</b><span>➜</span><b>${esc(nm(a.to))}</b></div>
+    <label>Label (optional)<input data-ar="label" value="${esc(a.label)}" placeholder="e.g. overlaps, replaces, drives"></label>
+    <div class="cp-lab">Colour</div>
+    <div class="swrow" style="margin-bottom:10px">${ARROW_COLORS.map(c=>`<button type="button" class="sw${c===col?' on':''}" data-arc="${c}" style="--s:${c}" title="${c}"></button>`).join('')}
+      <input type="color" data-ar="color" value="${col}" style="width:34px;height:24px;padding:0;margin:0;border:1px solid var(--line);border-radius:5px;background:none;cursor:pointer"></div>
+    <div class="two"><label>Line<select data-ar="curve">
+      <option value="0"${String(a.curve||0)==='0'?' selected':''}>Straight</option>
+      <option value="0.25"${a.curve===0.25?' selected':''}>Curved</option>
+      <option value="-0.25"${a.curve===-0.25?' selected':''}>Curved (other way)</option></select></label>
+      <label class="inl" style="align-self:end;padding-bottom:7px"><input type="checkbox" data-ar="dash"${a.dash?' checked':''}> Dashed</label></div>
+    <div class="row"><button type="button" class="btn sm" data-arb="flip">⇄ Flip direction</button><button type="button" class="btn sm ghost danger" data-arb="del">Delete arrow</button></div>
+    <div class="hint">Tip: press <b>A</b> and drag from one element to another. Press <b>R</b> to go back to moving and selecting elements.</div></div>`;
+}
+$('#panel').addEventListener('input',e=>{
+  const k=e.target.dataset&&e.target.dataset.ar;if(!k)return;
+  const a=getArrow();if(!a)return;
+  if(k==='label')a.label=e.target.value;
+  else if(k==='color')a.color=e.target.value;
+  else if(k==='curve')a.curve=parseFloat(e.target.value)||0;
+  else if(k==='dash')a.dash=e.target.checked;
+  checkpoint('ar:'+a.id+k);   // also redraws the arrows
+});
+$('#panel').addEventListener('click',e=>{
+  const a=getArrow();if(!a||mode!=='edit')return;
+  const c=e.target.closest('[data-arc]'),b=e.target.closest('[data-arb]');
+  if(c){a.color=c.dataset.arc;checkpoint();renderPanel();}
+  else if(b){
+    if(b.dataset.arb==='del')removeArrow(a.id);
+    else if(b.dataset.arb==='flip'){
+      [a.from,a.to]=[a.to,a.from];[a.x1,a.x2]=[a.x2,a.x1];[a.y1,a.y2]=[a.y2,a.y1];
+      a.curve=-(a.curve||0);checkpoint();renderPanel();
+    }
+  }
+});
+document.addEventListener('keydown',e=>{
+  if($('#modalRoot').firstChild||view!=='editor'||mode!=='edit')return;
+  const tag=document.activeElement&&document.activeElement.tagName;
+  if(['INPUT','TEXTAREA','SELECT'].includes(tag))return;
+  const a=getArrow();
+  if(a&&(e.key==='Delete'||e.key==='Backspace')){e.preventDefault();removeArrow(a.id);return;}
+  if(!e.ctrlKey&&!e.metaKey&&e.key.toLowerCase()==='a'){
+    tool='arrow';prefs.tool=tool;savePrefs();renderBar();
+    toast('Arrow mode: drag from one element to another');
+  }
+});
+
+/* ---- hook into the existing app (patches, nothing else is edited) ---- */
+const _renderRegions=renderRegions;
+renderRegions=function(){_renderRegions();const ov=$('#overlay');if(ov&&cur)drawArrows(ov,cur);};
+
+const _renderCompare=renderCompare;
+renderCompare=function(){
+  _renderCompare();
+  const ovs=$$('#stage .col .overlay');
+  cmpBoards().forEach((b,i)=>{if(ovs[i])drawArrows(ovs[i],b);});
+};
+
+const _syncPx=syncPx;
+syncPx=function(r){_syncPx(r);refreshArrows();};   // arrows follow while you drag or resize
+
+const _selectRegion=selectRegion;
+selectRegion=function(id){selArrow='';_selectRegion(id);refreshArrows();};
+
+const _renderPanel=renderPanel;
+renderPanel=function(){
+  _renderPanel();
+  if(view==='editor'&&mode==='edit'){
+    const a=getArrow(),s=$('#selection');
+    if(a&&s)s.innerHTML='<div class="sec-title">Selected arrow</div>'+arrowFormHTML(a);
+  }
+};
+
+const _renderBar=renderBar;
+renderBar=function(){
+  _renderBar();
+  const s=$('#bar [data-bar="tool"]');
+  if(s){
+    if(!s.querySelector('[value="arrow"]')){const o=document.createElement('option');o.value='arrow';o.textContent='➜ Arrow';s.appendChild(o);}
+    s.value=tool;
+  }
+};
+
+/* undo / redo now include arrows */
+const snapStr=()=>JSON.stringify({r:cur.regions,a:cur.arrows||[]});
+resetHistory=function(){H.undo=[];H.redo=[];H.snap=snapStr();H.key=null;updateUndoBtns();};
+checkpoint=function(key){
+  const s=snapStr();refreshArrows();if(s===H.snap)return;
+  const now=Date.now();
+  if(!(key&&H.key===key&&now-H.t<1200)){H.undo.push(H.snap);if(H.undo.length>150)H.undo.shift();}
+  H.key=key||null;H.t=now;H.snap=s;H.redo=[];save();updateUndoBtns();
+};
+applySnap=function(){
+  const o=JSON.parse(H.snap);cur.regions=o.r||[];cur.arrows=o.a||[];
+  H.key=null;if(!getSel())selId=null;
+  save();renderRegions();renderPanel();updateUndoBtns();
+};
+
+/* duplicating a template or video gives the copy its own arrows */
+async function dealias(){
+  const seen=new Set();
+  for(const b of boards){
+    if(!b.arrows||!b.arrows.length)continue;
+    if(seen.has(b.arrows)){b.arrows=JSON.parse(JSON.stringify(b.arrows));await dbPut(b);}
+    else seen.add(b.arrows);
+  }
+}
+const _dupBoard=duplicateBoard;
+duplicateBoard=async function(b){await _dupBoard(b);await dealias();};
+const _dupVideo=duplicateVideo;
+duplicateVideo=async function(v){await _dupVideo(v);await dealias();};
+
+/* arrows in the annotated PNG export */
+function drawArrowsCanvas(x,b,W,H){
+  (b.arrows||[]).forEach(a=>{
+    const g=arrowShape(a,b,W,H);if(!g)return;
+    const col=a.color||ARROW_COL,sw=g.sw,P=new Path2D(g.d);
+    const pts=g.head.split(' ').map(s=>s.split(',').map(Number));
+    const head=new Path2D();head.moveTo(pts[0][0],pts[0][1]);head.lineTo(pts[1][0],pts[1][1]);head.lineTo(pts[2][0],pts[2][1]);head.closePath();
+    x.lineCap='round';x.lineJoin='round';x.setLineDash([]);
+    x.strokeStyle='rgba(255,255,255,.9)';x.fillStyle='#fff';
+    x.lineWidth=sw*2.4;x.stroke(P);x.lineWidth=sw*1.4;x.stroke(head);x.fill(head);
+    x.strokeStyle=col;x.fillStyle=col;x.lineWidth=sw;
+    x.setLineDash(a.dash?[sw*3,sw*2.2]:[]);x.stroke(P);x.setLineDash([]);x.fill(head);
+    if(a.label){
+      x.font=`700 ${W*.02}px sans-serif`;x.textAlign='center';x.textBaseline='alphabetic';
+      x.lineWidth=W*.006;x.strokeStyle='#fff';x.strokeText(a.label,g.lx,g.ly-sw*2.6);
+      x.fillStyle=col;x.fillText(a.label,g.lx,g.ly-sw*2.6);
+    }
+  });
+}
+const _downloadBlob=downloadBlob;
+downloadBlob=function(blob,name){
+  if(/-annotated\.png$/.test(name)&&cur&&(cur.arrows||[]).length){
+    const u=URL.createObjectURL(blob);
+    loadImg(u).then(img=>{
+      const c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;
+      const x=c.getContext('2d');x.drawImage(img,0,0);
+      drawArrowsCanvas(x,cur,c.width,c.height);
+      c.toBlob(b2=>{URL.revokeObjectURL(u);_downloadBlob(b2,name);},'image/png');
+    }).catch(()=>_downloadBlob(blob,name));
+    return;
+  }
+  _downloadBlob(blob,name);
+};
 boot();
 </script>
 </body>
