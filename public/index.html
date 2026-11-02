@@ -300,6 +300,15 @@ input.board-name:focus{outline:0;border-color:var(--blue);background:#fff}
 .region.arw:hover .hl{opacity:.18}
 .region.arw.is-selected .hl{opacity:.28}
 .handle[data-h=a1],.handle[data-h=a2]{width:13px;height:13px;border-radius:50%;margin:-6.5px 0 0 -6.5px;cursor:crosshair}
+/* viewer (read-only) role */
+body[data-role=view] #modeSeg,body[data-role=view] #undoBtn,body[data-role=view] #redoBtn,
+body[data-role=view] #importBtn,body[data-role=view] #settingsBtn,
+body[data-role=view] [data-act="newBoard"],body[data-role=view] [data-act="newVideo"],
+body[data-role=view] [data-act="uploadMany"],body[data-role=view] [data-act="dup"],
+body[data-role=view] [data-act="boardSettings"],body[data-role=view] [data-act="cdup"],
+body[data-role=view] [data-act="cdel"],body[data-role=view] [data-act="upload"],
+body[data-role=view] .card.add{display:none!important}
+
 </style>
 </head>
 <body>
@@ -2271,6 +2280,69 @@ function playModal(){
   v.addEventListener('loadedmetadata',()=>{try{v.currentTime=t0;}catch(e){}},{once:true});
   onModalClose=()=>{try{v.pause();}catch(e){}};
 }
+
+/* =========================================================
+   ROLES: viewer (read-only) vs editor
+   ========================================================= */
+let ROLE='edit';
+const RO=()=>ROLE==='view';
+const ROMSG=()=>toast('View-only. Use "Unlock editing" with the editor password.');
+
+/* viewers never write or sync changes */
+const _render=render;render=function(f){if(RO())mode='view';return _render(f);};
+const _pushAll=pushAll;pushAll=function(){return RO()?Promise.resolve():_pushAll();};
+const _markDirty=markDirty;markDirty=function(a,b){if(!RO())_markDirty(a,b);};
+const _schedulePush=schedulePush;schedulePush=function(){if(!RO())_schedulePush();};
+const guard=f=>function(...a){if(RO()){ROMSG();return;}return f.apply(this,a);};
+createFromFiles=guard(createFromFiles);
+loadImageFile=guard(loadImageFile);
+importFile=guard(importFile);
+newBoardModal=guard(newBoardModal);
+newVideoModal=guard(newVideoModal);
+deleteBoard=guard(deleteBoard);
+deleteVideo=guard(deleteVideo);
+duplicateBoard=guard(duplicateBoard);
+duplicateVideo=guard(duplicateVideo);
+captureModal=guard(captureModal);
+suggestElements=guard(suggestElements);
+pasteRegion=guard(pasteRegion);
+
+/* if the login ever expires, go back to the lock screen instead of asking for a code */
+const _api=api;
+api=async function(p,o){
+  const r=await _api(p,Object.assign({},o||{},{_retried:true}));
+  if(r.status===401)location.reload();
+  return r;
+};
+
+async function unlockEditing(){
+  const pw=prompt('Editor password:');if(!pw)return;
+  const fd=new FormData();fd.append('password',pw);
+  try{
+    const r=await fetch('/__login?json=1',{method:'POST',body:fd});
+    const j=await r.json().catch(()=>({}));
+    if(r.ok&&j.role==='edit')location.reload();else toast('That is not the editor password');
+  }catch(e){toast('Could not check the password');}
+}
+function setupRoleUI(){
+  const t=document.querySelector('header .tools');if(!t)return;
+  const p=document.createElement('span');
+  p.className='pill'+(RO()?'':' ok');p.style.cursor='default';
+  p.textContent=RO()?'👁 Viewer':'✏️ Editor';
+  t.prepend(p);
+  if(RO()){
+    const u=document.createElement('button');u.className='btn sm';u.textContent='🔓 Unlock editing';u.onclick=unlockEditing;t.appendChild(u);
+  }
+  const o=document.createElement('button');o.className='btn sm ghost';o.textContent='Sign out';o.onclick=()=>{location.href='/logout';};t.appendChild(o);
+}
+const _boot=boot;
+boot=async function(){
+  try{const r=await fetch('/__role',{cache:'no-store'});ROLE=r.ok?((await r.json()).role||'view'):'view';}
+  catch(e){ROLE='view';}
+  document.body.dataset.role=ROLE;
+  setupRoleUI();
+  return _boot();
+};
 
 boot();
 </script>
