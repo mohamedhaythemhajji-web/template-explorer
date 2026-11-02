@@ -269,6 +269,17 @@ input.board-name:focus{outline:0;border-color:var(--blue);background:#fff}
 .vbadge{position:absolute;left:8px;bottom:8px;background:var(--blue);color:#fff;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px}
 .cap-ctl{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:10px 0}
 .cap-time{font-variant-numeric:tabular-nums;font-weight:700;min-width:48px;text-align:center}
+/* freehand shapes */
+.shp{position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none}
+.shp path{fill:var(--c);fill-opacity:.12;stroke:var(--c);stroke-width:1.5;vector-effect:non-scaling-stroke;stroke-linejoin:round;pointer-events:fill;cursor:pointer;transition:fill-opacity .13s}
+.region.shaped{border:0;pointer-events:none}
+.region.shaped::before{display:none}
+.region.shaped .handle{pointer-events:auto}
+.region.shaped:hover path{fill-opacity:.24}
+.region.shaped.is-selected{outline:1px dashed var(--c);outline-offset:0}
+.region.shaped.is-selected path{fill-opacity:.24;stroke-width:2.5}
+.overlay.edit .region.shaped path{cursor:move}
+.livefree{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 </style>
 </head>
 <body>
@@ -791,6 +802,7 @@ function renderBar(){
     <span class="sep"></span>
     <span class="zoom"><button class="btn sm" data-act="zoomOut" title="Zoom out (-)">−</button><span id="zoomLbl" class="zl"></span><button class="btn sm" data-act="zoomIn" title="Zoom in (+)">+</button><button class="btn sm" data-act="zoomFit" title="Fit (0)">Fit</button><button class="btn sm" data-act="zoom100" title="Actual size (1)">100%</button></span>
     <span class="sep only-edit"></span>
+    <label class="opt only-edit">Draw <select data-bar="tool"><option value="rect"${tool==='rect'?' selected':''}>▭ Rectangle</option><option value="free"${tool==='free'?' selected':''}>✎ Freehand</option></select></label>
     <label class="opt only-edit">Snap <select data-bar="snap">${[0,5,10,20,50].map(v=>`<option value="${v}"${prefs.snap===v?' selected':''}>${v?v+' px':'Off'}</option>`).join('')}</select></label>
     <label class="opt"><input type="checkbox" data-bar="labels"${prefs.labels?' checked':''}> Labels</label>`;
   }else if(view==='library'){
@@ -839,6 +851,7 @@ $('#bar').addEventListener('input',e=>{
   const t=e.target,k=t.dataset.bar;if(!k)return;
   if(k==='board'){const b=boards.find(x=>x.id===t.value);if(b)openBoard(b);}
   else if(k==='snap'){prefs.snap=+t.value;savePrefs();}
+  else if(k==='tool'){tool=t.value;prefs.tool=tool;savePrefs();}
   else if(k==='labels'){prefs.labels=t.checked;savePrefs();$$('.canvas').forEach(c=>c.classList.toggle('labels',prefs.labels));}
   else if(k==='search'){libSearch=t.value;renderLibrary();}
   else if(k==='sort'){libSort=t.value;renderLibrary();}
@@ -936,7 +949,7 @@ function regionEl(reg,b,opt={}){
   d.style.setProperty('--c',regColor(b,reg));
   d.title=[reg.label,reg.feed].filter(Boolean).join(' — ');
   d.innerHTML=`<span class="badge"><b>${esc(reg.num||'')}</b><i>${esc(reg.label||'')}</i></span><span class="dim"></span>`;
-  setRect(d,reg,b);
+  setRect(d,reg,b);shapeInto(d,reg);
 
   if(opt.compare){
     d.addEventListener('click',e=>{e.stopPropagation();cmpSel=cmpSel===d.dataset.key?null:d.dataset.key;updateSelectionClasses();renderPanel();});
@@ -955,7 +968,7 @@ function regionEl(reg,b,opt={}){
     if(selId!==reg.id)selectRegion(reg.id);
     drag={kind:e.target.dataset.h||'move',reg,el:d,rect:$('#overlay').getBoundingClientRect(),sx:e.clientX,sy:e.clientY,o:{x:reg.x,y:reg.y,w:reg.w,h:reg.h}};
     d.classList.add('dragging');
-    try{d.setPointerCapture(e.pointerId);}catch(_){}
+    try{e.target.setPointerCapture(e.pointerId);}catch(_){}
   });
   d.addEventListener('pointermove',e=>{
     if(!drag||drag.el!==d)return;
@@ -977,25 +990,93 @@ function regionEl(reg,b,opt={}){
   return d;
 }
 
-/* ---------- drawing ---------- */
+/* ---------- drawing (rectangle + freehand) ---------- */
 const ptOf=(e,r)=>({x:snapV(clamp((e.clientX-r.left)/r.width*100,0,100),'x'),y:snapV(clamp((e.clientY-r.top)/r.height*100,0,100),'y')});
 const normRect=(a,b)=>({x:Math.min(a.x,b.x),y:Math.min(a.y,b.y),w:Math.abs(b.x-a.x),h:Math.abs(b.y-a.y)});
+
+let tool=prefs.tool==='free'?'free':'rect';
+const FREE_EPS=3;   // higher = smoother, fewer points
+const SVGNS='http://www.w3.org/2000/svg';
+
+function rdp(p,eps){
+  if(p.length<3)return p;
+  const a=p[0],b=p[p.length-1],dx=b[0]-a[0],dy=b[1]-a[1],L=Math.hypot(dx,dy);
+  let md=0,mi=0;
+  for(let i=1;i<p.length-1;i++){
+    const d=L?Math.abs(dy*p[i][0]-dx*p[i][1]+b[0]*a[1]-b[1]*a[0])/L:Math.hypot(p[i][0]-a[0],p[i][1]-a[1]);
+    if(d>md){md=d;mi=i;}
+  }
+  if(md>eps){const l=rdp(p.slice(0,mi+1),eps),r=rdp(p.slice(mi),eps);return l.slice(0,-1).concat(r);}
+  return [a,b];
+}
+function ptsPath(pts,sx=1,sy=1,ox=0,oy=0){
+  const n=pts.length;if(n<3)return '';
+  const P=pts.map(p=>[ox+p[0]*sx,oy+p[1]*sy]),mid=(a,b)=>[(a[0]+b[0])/2,(a[1]+b[1])/2];
+  const m0=mid(P[n-1],P[0]);
+  let d=`M${m0[0]} ${m0[1]}`;
+  for(let i=0;i<n;i++){const m=mid(P[i],P[(i+1)%n]);d+=`Q${P[i][0]} ${P[i][1]} ${m[0]} ${m[1]}`;}
+  return d+'Z';
+}
+function shapeInto(d,reg){
+  if(!Array.isArray(reg.pts)||reg.pts.length<3)return;
+  d.classList.add('shaped');
+  const s=document.createElementNS(SVGNS,'svg');
+  s.setAttribute('class','shp');s.setAttribute('viewBox','0 0 100 100');s.setAttribute('preserveAspectRatio','none');
+  const p=document.createElementNS(SVGNS,'path');p.setAttribute('d',ptsPath(reg.pts));
+  s.appendChild(p);d.insertBefore(s,d.firstChild);
+}
+
 function startDraw(e){
   const ov=$('#overlay');if(!ov)return;
   e.preventDefault();
-  const rect=ov.getBoundingClientRect(),s=ptOf(e,rect);
-  const el=document.createElement('div');el.className='region live';el.style.setProperty('--c',typeColor(cur,cur.types[0]));
+  const rect=ov.getBoundingClientRect(),col=typeColor(cur,cur.types[0]);
+  if(tool==='free'){
+    const svg=document.createElementNS(SVGNS,'svg');
+    svg.setAttribute('class','livefree');svg.setAttribute('viewBox',`0 0 ${rect.width} ${rect.height}`);
+    const path=document.createElementNS(SVGNS,'path');
+    path.setAttribute('style',`fill:${col};fill-opacity:.12;stroke:${col};stroke-width:2;stroke-dasharray:5 4;stroke-linejoin:round;stroke-linecap:round`);
+    svg.appendChild(path);ov.appendChild(svg);
+    draw={free:true,pts:[[e.clientX-rect.left,e.clientY-rect.top]],rect,el:svg,path};
+    try{ov.setPointerCapture(e.pointerId);}catch(_){}
+    return;
+  }
+  const s=ptOf(e,rect);
+  const el=document.createElement('div');el.className='region live';el.style.setProperty('--c',col);
   el.innerHTML='<span class="dim"></span>';setRect(el,{x:s.x,y:s.y,w:0,h:0});ov.appendChild(el);
   draw={s,rect,el};
   try{ov.setPointerCapture(e.pointerId);}catch(_){}
 }
+function finishFree(d){
+  if(d.pts.length<4){selectRegion(null);return;}
+  let eps=FREE_EPS,s=rdp(d.pts,eps);
+  while(s.length>120){eps*=1.4;s=rdp(d.pts,eps);}
+  if(s.length<3){selectRegion(null);return;}
+  const xs=s.map(p=>p[0]),ys=s.map(p=>p[1]);
+  const x0=Math.min(...xs),x1=Math.max(...xs),y0=Math.min(...ys),y1=Math.max(...ys);
+  const W=d.rect.width,H=d.rect.height,bw=(x1-x0)/W*100,bh=(y1-y0)/H*100;
+  if(bw<=MIN*1.2||bh<=MIN*1.2){selectRegion(null);return;}
+  const rel=s.map(p=>[+((p[0]-x0)/(x1-x0)*100).toFixed(2),+((p[1]-y0)/(y1-y0)*100).toFixed(2)]);
+  addRegion({x:x0/W*100,y:y0/H*100,w:bw,h:bh},{pts:rel});
+}
 function attachDraw(ov){
   ov.addEventListener('pointerdown',e=>{if(e.target===ov&&e.button===0)startDraw(e);});
-  ov.addEventListener('pointermove',e=>{if(!draw)return;setRect(draw.el,normRect(draw.s,ptOf(e,draw.rect)));});
+  ov.addEventListener('pointermove',e=>{
+    if(!draw)return;
+    if(draw.free){
+      const x=clamp(e.clientX-draw.rect.left,0,draw.rect.width),y=clamp(e.clientY-draw.rect.top,0,draw.rect.height),l=draw.pts[draw.pts.length-1];
+      if(Math.hypot(x-l[0],y-l[1])<2)return;
+      draw.pts.push([x,y]);
+      draw.path.setAttribute('d','M'+draw.pts.map(p=>p[0].toFixed(1)+' '+p[1].toFixed(1)).join('L'));
+      return;
+    }
+    setRect(draw.el,normRect(draw.s,ptOf(e,draw.rect)));
+  });
   const fin=(e,cancel)=>{
     if(!draw)return;
-    const n=normRect(draw.s,ptOf(e,draw.rect));draw.el.remove();draw=null;
+    const d=draw;draw=null;d.el.remove();
     if(cancel)return;
+    if(d.free){finishFree(d);return;}
+    const n=normRect(d.s,ptOf(e,d.rect));
     if(n.w>MIN*1.2&&n.h>MIN*1.2)addRegion(n);else selectRegion(null);
   };
   ov.addEventListener('pointerup',e=>fin(e,false));ov.addEventListener('pointercancel',e=>fin(e,true));
@@ -1050,12 +1131,12 @@ function renderPanel(){
   if(sel)h+=mode==='view'?detailHTML(sel,cur):formHTML(sel);
   else h+=`<div class="empty-sel">${!cur.image?(cur.vid?'Capture a frame from your video to get started.':'Upload an ad image to get started.'):mode==='view'
     ?'Click a numbered box on the ad (or use ↑ ↓) to see its feed reference.'
-    :'Drag on the image to draw a box. Click a box to select it; drag to move, pull handles to resize. Hold <b>Shift</b> to draw over an existing box.'}</div>`;
+    :'Drag on the image to draw a box (or switch Draw to Freehand). Click a shape to select it; drag to move, pull handles to resize. Hold <b>Shift</b> to draw over an existing one.'}</div>`;
   h+=`</div><div class="panel-sec" style="border-bottom:0"><div class="sec-title"><span>All elements · ${n}</span>
     ${mode==='edit'&&n?'<span class="row"><button class="mini" data-act="sortNum">Sort by #</button><button class="mini" data-act="renumber">Renumber</button><button class="mini" data-act="bulk">Bulk edit</button></span>':''}</div>
     ${n>4?`<input class="filter" id="listFilter" placeholder="Filter elements…" value="${esc(listFilter)}">`:''}
     <div id="elList"></div>
-    ${mode==='edit'?'<div class="hint">Shortcuts: arrows nudge (Shift = 10px) · Ctrl+D duplicate · Ctrl+C / V copy &amp; paste · Del delete · Ctrl+Z undo · E / V switch mode · + − 0 1 zoom · [ ] previous / next scene</div>':''}</div>`;
+    ${mode==='edit'?'<div class="hint">Shortcuts: arrows nudge (Shift = 10px) · Ctrl+D duplicate · Ctrl+C / V copy &amp; paste · Del delete · Ctrl+Z undo · E / V switch mode · R / F rectangle / freehand · + − 0 1 zoom · [ ] previous / next scene</div>':''}</div>`;
   p.innerHTML=h;renderList();
   const li=$('.list-item.is-selected',p);if(li)li.scrollIntoView({block:'nearest'});
 }
@@ -1102,7 +1183,7 @@ function formHTML(r){
   <div class="subhead"><span>Extra fields</span><button data-act="addField">+ Add</button></div>
   ${(r.fields||[]).map((f,i)=>`<div class="kvrow"><input data-fk="${i}" list="dlKeys" placeholder="Name" value="${esc(f.k)}"><input data-fv="${i}" placeholder="Value" value="${esc(f.v)}"><button type="button" class="reqbtn${f.req?' on':''}" data-req="${i}" title="Click to mark this field required or optional">${f.req?'Required':'Optional'}</button><button class="x" data-act="rmField" data-i="${i}" title="Remove">✕</button></div>`).join('')}
   <label style="margin-top:12px">Notes<textarea data-f="notes" rows="3" placeholder="Crop rules, fallbacks, AI fill…">${esc(r.notes)}</textarea></label>
-  <div class="row"><button class="btn sm" data-act="dupRegion">Duplicate</button><button class="btn sm ghost danger" data-act="delRegion">Delete element</button></div></div>`;
+  <div class="row"><button class="btn sm" data-act="dupRegion">Duplicate</button>${r.pts&&r.pts.length>=3?'<button class="btn sm" data-act="toRect">Make rectangle</button>':''}<button class="btn sm ghost danger" data-act="delRegion">Delete element</button></div></div>`;
 }
 function syncPx(r){
   const p=pxOf(r);
@@ -1182,6 +1263,7 @@ function panelAct(a){
   else if(act==='renumber'){cur.regions.forEach((r,i)=>r.num=String(i+1));checkpoint();renderRegions();renderPanel();}
   else if(act==='sortNum'){cur.regions.sort((x,y)=>(parseFloat(x.num)||1e9)-(parseFloat(y.num)||1e9));checkpoint();renderPanel();}
   else if(act==='bulk')bulkModal();
+  else if(act==='toRect'&&sel){delete sel.pts;checkpoint();renderRegions();renderPanel();}
 }
 function copyText(t){
   if(navigator.clipboard&&window.isSecureContext)return navigator.clipboard.writeText(t);
@@ -1495,7 +1577,8 @@ const exporters={
     const s=Math.max(1,c.width/900);x.textAlign='center';x.textBaseline='middle';x.font=`700 ${12*s}px sans-serif`;
     cur.regions.forEach(r=>{
       const col=regColor(cur,r),rx=r.x/100*c.width,ry=r.y/100*c.height,rw=r.w/100*c.width,rh=r.h/100*c.height;
-      x.lineWidth=2*s;x.strokeStyle=col;x.fillStyle=col+'26';x.fillRect(rx,ry,rw,rh);x.strokeRect(rx,ry,rw,rh);
+      x.lineWidth=2*s;x.strokeStyle=col;x.fillStyle=col+'26';
+      if(r.pts&&r.pts.length>=3){const pth=new Path2D(ptsPath(r.pts,rw/100,rh/100,rx,ry));x.fill(pth);x.stroke(pth);}else{x.fillRect(rx,ry,rw,rh);x.strokeRect(rx,ry,rw,rh);}
       x.beginPath();x.arc(rx,ry,11*s,0,Math.PI*2);x.fillStyle=col;x.fill();x.strokeStyle='#fff';x.lineWidth=2*s;x.stroke();
       x.fillStyle='#fff';x.fillText(String(r.num||''),rx,ry+.5*s);
     });
@@ -1682,6 +1765,7 @@ document.addEventListener('keydown',e=>{
     if(n)switchScene(n);
     return;
   }
+  if(!mod&&mode==='edit'&&(k==='r'||k==='f')){tool=k==='f'?'free':'rect';prefs.tool=tool;savePrefs();renderBar();toast(tool==='free'?'Freehand drawing':'Rectangle drawing');return;}
   if(!mod&&k==='e'){mode='edit';selId=null;render(true);return;}
   if(!mod&&k==='v'){mode='view';selId=null;render(true);return;}
   if(!mod&&(e.key==='+'||e.key==='='))setZoom(effZoom()*1.2);

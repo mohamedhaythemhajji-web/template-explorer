@@ -33,6 +33,9 @@ function sanitizeRegion(r) {
     color: /^#[0-9a-f]{6}$/i.test(r.color) ? r.color : '',
     t0: tm(r.t0),
     t1: tm(r.t1),
+    pts: (Array.isArray(r.pts) ? r.pts : []).slice(0, 400)
+      .filter(p => Array.isArray(p) && p.length >= 2)
+      .map(p => [Math.min(100, Math.max(0, num(p[0]))), Math.min(100, Math.max(0, num(p[1])))]),
     fields: (Array.isArray(r.fields) ? r.fields : []).slice(0, 50)
       .map(f => ({ k: str(f && f.k, 100), v: str(f && f.v, 1000), req: !!(f && f.req) }))
   };
