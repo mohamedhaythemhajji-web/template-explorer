@@ -32,7 +32,13 @@ function sanitizeRegion(r) {
     notes: str(r.notes, 5000),
     color: /^#[0-9a-f]{6}$/i.test(r.color) ? r.color : '',
     t0: tm(r.t0),
-    t1: tm(r.t1),
+    rot: Math.max(-360, Math.min(360, num(r.rot))),
+    kind: r.kind === 'arrow' ? 'arrow' : '',
+    ap: r.kind === 'arrow' && Array.isArray(r.ap) && r.ap.length === 4
+      ? r.ap.map(v => Math.max(-200, Math.min(300, num(v)))) : [],
+    curve: Math.max(-1, Math.min(1, num(r.curve))),
+    dash: !!r.dash,
+    target: str(r.target, 40),
     pts: (Array.isArray(r.pts) ? r.pts : []).slice(0, 400)
       .filter(p => Array.isArray(p) && p.length >= 2)
       .map(p => [Math.min(100, Math.max(0, num(p[0]))), Math.min(100, Math.max(0, num(p[1])))]),

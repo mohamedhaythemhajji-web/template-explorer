@@ -274,18 +274,32 @@ input.board-name:focus{outline:0;border-color:var(--blue);background:#fff}
 .shp path{fill:var(--c);fill-opacity:.12;stroke:var(--c);stroke-width:1.5;vector-effect:non-scaling-stroke;stroke-linejoin:round;pointer-events:fill;cursor:pointer;transition:fill-opacity .13s}
 .region.shaped{border:0;pointer-events:none}
 .region.shaped::before{display:none}
-.region.shaped .handle{pointer-events:auto}
+.region.shaped .handle,.region.shaped .rot-h{pointer-events:auto}
 .region.shaped:hover path{fill-opacity:.24}
 .region.shaped.is-selected{outline:1px dashed var(--c);outline-offset:0}
 .region.shaped.is-selected path{fill-opacity:.24;stroke-width:2.5}
 .overlay.edit .region.shaped path{cursor:move}
 .livefree{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
-/* arrows */
-.arrows{position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none;z-index:6}
-.arrows .hit{pointer-events:stroke;cursor:pointer}
-.arr-ends{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;margin-bottom:12px}
-.arr-ends b{background:#f1f2f6;border-radius:6px;padding:2px 8px;font-weight:650}
-.arr-ends span{color:var(--muted)}
+/* rotation */
+.region{transform:rotate(var(--rot,0deg))}
+.region .badge,.region .dim{transform:rotate(calc(-1 * var(--rot,0deg)))}
+.rot-h{display:none;position:absolute;left:50%;top:-28px;width:13px;height:13px;margin-left:-6.5px;border-radius:50%;background:#fff;border:2px solid var(--c);cursor:grab;z-index:4}
+.rot-h::after{content:'';position:absolute;left:50%;top:100%;width:1px;height:15px;margin-left:-.5px;background:var(--c)}
+.overlay.edit .region.is-selected .rot-h{display:block}
+.region.dragging .rot-h{cursor:grabbing}
+/* arrow elements */
+.region.arw{border:0;pointer-events:none}
+.region.arw::before{display:none}
+.region.arw.is-selected{outline:0}
+.region.arw .handle,.region.arw .rot-h{pointer-events:auto}
+.arwsvg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none}
+.arw path.hit{pointer-events:stroke;cursor:pointer}
+.arw polygon.hit{pointer-events:fill;cursor:pointer}
+.overlay.edit .arw .hit{cursor:move}
+.hl{opacity:0;transition:opacity .13s}
+.region.arw:hover .hl{opacity:.18}
+.region.arw.is-selected .hl{opacity:.28}
+.handle[data-h=a1],.handle[data-h=a2]{width:13px;height:13px;border-radius:50%;margin:-6.5px 0 0 -6.5px;cursor:crosshair}
 </style>
 </head>
 <body>
@@ -324,6 +338,7 @@ input.board-name:focus{outline:0;border-color:var(--blue);background:#fff}
    Template Reference Explorer
    Local cache: IndexedDB. Cloud: Netlify Blobs via /api (Netlify Function).
    Video templates: each scene is a normal board that shares a `vid`.
+   Elements: rectangle, freehand shape, or arrow. All can be rotated.
    ========================================================= */
 const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
 const uid=()=>Math.random().toString(36).slice(2,9)+Date.now().toString(36).slice(-4);
@@ -341,6 +356,10 @@ const PRESETS=[['auto','Auto (match image size)'],['1080x1080','Square 1:1 · 10
   ['1080x1920','Story 9:16 · 1080×1920'],['1200x628','Landscape 1.91:1 · 1200×628'],['1920x1080','Landscape 16:9 · 1920×1080'],['custom','Custom']];
 const typeColor=(b,t)=>{const i=b.types.indexOf(t);return PALETTE[(i<0?b.types.length:i)%PALETTE.length];};
 const splitFeed=s=>(s||'').split(/[,;\n·]/).map(x=>x.trim()).filter(Boolean);
+const ARROW_COL='#d6336c';
+const IW=b=>b.imgW||b.canvas.w, IH=b=>b.imgH||b.canvas.h;
+const normDeg=v=>((((v+180)%360)+360)%360)-180;
+const kindIcon=r=>r.kind==='arrow'?'➜ ':(Array.isArray(r.pts)&&r.pts.length>=3?'✎ ':'');
 
 /* ---------- time helpers (video) ---------- */
 function parseT(s){
@@ -481,6 +500,7 @@ async function fetchRemoteBoard(id, local, s) {
   const rev = d.rev, imageRev = d.imageRev || 0, hasImage = d.hasImage;
   delete nb.rev; delete nb.imageRev; delete nb.hasImage;
   nb.image = null;
+  if (Array.isArray(nb.regions)) convertOldArrows(nb);
   if (hasImage) {
     if (local && local.image instanceof Blob && s && s.imageRev === imageRev) nb.image = local.image;
     else {
@@ -716,6 +736,117 @@ function undo(){if(view!=='editor')return;if(!H.undo.length)return toast('Nothin
 function redo(){if(view!=='editor'||!H.redo.length)return;H.undo.push(H.snap);H.snap=H.redo.pop();applySnap();}
 function updateUndoBtns(){$('#undoBtn').disabled=!H.undo.length;$('#redoBtn').disabled=!H.redo.length;}
 
+/* ---------- arrows: geometry helpers ---------- */
+/* An arrow is a normal element (kind:'arrow'). It has a bounding box (x,y,w,h in %)
+   plus ap = [startX,startY,endX,endY] as % of that box. Its angle is baked into the end points. */
+const SVGNS='http://www.w3.org/2000/svg';
+function sv(tag,at,parent){
+  const n=document.createElementNS(SVGNS,tag);
+  for(const k in at)n.setAttribute(k,at[k]);
+  if(parent)parent.appendChild(n);
+  return n;
+}
+function arrowBox(sx,sy,ex,ey){
+  const MINP=2;
+  const w=Math.max(Math.abs(ex-sx),MINP),h=Math.max(Math.abs(ey-sy),MINP);
+  const x=clamp((sx+ex)/2-w/2,0,100-w),y=clamp((sy+ey)/2-h/2,0,100-h);
+  return {x,y,w,h,ap:[(sx-x)/w*100,(sy-y)/h*100,(ex-x)/w*100,(ey-y)/h*100].map(v=>+v.toFixed(2))};
+}
+function setArrowPts(r,s,e){
+  s=s.map(v=>clamp(v,0,100));e=e.map(v=>clamp(v,0,100));
+  const o=arrowBox(s[0],s[1],e[0],e[1]);
+  r.x=o.x;r.y=o.y;r.w=o.w;r.h=o.h;r.ap=o.ap;
+}
+function arrowPts(r){
+  const a=(r.ap&&r.ap.length===4)?r.ap:[0,50,100,50];
+  return [[r.x+a[0]/100*r.w,r.y+a[1]/100*r.h],[r.x+a[2]/100*r.w,r.y+a[3]/100*r.h]];
+}
+function arrowMetrics(r,b){
+  const a=(r.ap&&r.ap.length===4)?r.ap:[0,50,100,50];
+  const vx=(a[2]-a[0])/100*r.w,vy=(a[3]-a[1])/100*r.h;   // % of canvas
+  const len=Math.hypot(vx/100*b.canvas.w,vy/100*b.canvas.h);
+  const ang=Math.atan2(vy/100*IH(b),vx/100*IW(b))*180/Math.PI;
+  return {len:Math.round(len),ang:Math.round(ang*10)/10};
+}
+function rotArrow(r,deg,b){
+  const W=IW(b),H=IH(b),pts=arrowPts(r);
+  const P=p=>[p[0]*W/100,p[1]*H/100],Q=p=>[p[0]/W*100,p[1]/H*100];
+  const ps=P(pts[0]),pe=P(pts[1]),m=[(ps[0]+pe[0])/2,(ps[1]+pe[1])/2];
+  const t=deg*Math.PI/180,c=Math.cos(t),sn=Math.sin(t);
+  const R=p=>{const dx=p[0]-m[0],dy=p[1]-m[1];return Q([m[0]+dx*c-dy*sn,m[1]+dx*sn+dy*c]);};
+  setArrowPts(r,R(ps),R(pe));
+}
+function rotateBy(r,dd){
+  if(r.kind==='arrow')rotArrow(r,dd,cur);
+  else r.rot=+normDeg((r.rot||0)+dd).toFixed(1);
+}
+/* geometry in px units of the image, local to the arrow's bounding box */
+function arrowGeom(r,W,H){
+  const bw=r.w/100*W,bh=r.h/100*H,a=(r.ap&&r.ap.length===4)?r.ap:[0,50,100,50];
+  const s=[a[0]/100*bw,a[1]/100*bh],e=[a[2]/100*bw,a[3]/100*bh];
+  const dx=e[0]-s[0],dy=e[1]-s[1],len=Math.hypot(dx,dy),sw=Math.max(1.5,W*.004);
+  if(len<sw*4)return null;
+  const k=r.curve||0,c=[(s[0]+e[0])/2-dy*k,(s[1]+e[1])/2+dx*k];
+  let ux=e[0]-c[0],uy=e[1]-c[1],ul=Math.hypot(ux,uy);
+  if(!ul){ux=dx;uy=dy;ul=len;}
+  ux/=ul;uy/=ul;
+  const hl=Math.min(sw*5.5,len*.5),hw=hl*.5,bs=[e[0]-ux*hl,e[1]-uy*hl],nx=-uy,ny=ux;
+  return {sw,d:`M${s[0]} ${s[1]}Q${c[0]} ${c[1]} ${bs[0]} ${bs[1]}`,
+    head:[e,[bs[0]+nx*hw,bs[1]+ny*hw],[bs[0]-nx*hw,bs[1]-ny*hw]]};
+}
+function arrowSvgInto(parent,r,col,W,H,hit){
+  const g=arrowGeom(r,W,H);if(!g)return;
+  const sw=g.sw,grp=sv('g',{},parent),pts=g.head.map(p=>p.join(',')).join(' ');
+  sv('path',{class:'hl',d:g.d,fill:'none',stroke:col,'stroke-width':sw*4,'stroke-linecap':'round'},grp);
+  sv('path',{d:g.d,fill:'none',stroke:'#fff','stroke-opacity':.9,'stroke-width':sw*2.4,'stroke-linecap':'round'},grp);
+  sv('polygon',{points:pts,fill:'#fff',stroke:'#fff','stroke-opacity':.9,'stroke-width':sw*1.4,'stroke-linejoin':'round'},grp);
+  const line={d:g.d,fill:'none',stroke:col,'stroke-width':sw,'stroke-linecap':'round'};
+  if(r.dash)line['stroke-dasharray']=`${sw*3} ${sw*2.2}`;
+  sv('path',line,grp);
+  sv('polygon',{points:pts,fill:col,stroke:col,'stroke-width':sw*.4,'stroke-linejoin':'round'},grp);
+  if(hit){
+    sv('path',{class:'hit',d:g.d,fill:'none',stroke:'transparent','stroke-width':Math.max(sw*5,W*.012),'stroke-linecap':'round'},grp);
+    sv('polygon',{class:'hit',points:pts,fill:'transparent',stroke:'transparent','stroke-width':sw*3},grp);
+  }
+}
+function paintArrow(el,r,b){
+  el.classList.add('arw');
+  const old=el.querySelector(':scope > svg.arwsvg');if(old)old.remove();
+  const W=IW(b),H=IH(b);
+  const s=document.createElementNS(SVGNS,'svg');
+  s.setAttribute('class','arwsvg');
+  s.setAttribute('viewBox',`0 0 ${Math.max(1,r.w/100*W)} ${Math.max(1,r.h/100*H)}`);
+  s.setAttribute('preserveAspectRatio','none');
+  arrowSvgInto(s,r,regColor(b,r),W,H,true);
+  el.insertBefore(s,el.firstChild);
+}
+function placeArrowHandles(el,r){
+  const a=(r.ap&&r.ap.length===4)?r.ap:[0,50,100,50];
+  const h1=el.querySelector('.handle[data-h="a1"]'),h2=el.querySelector('.handle[data-h="a2"]');
+  if(h1){h1.style.left=a[0]+'%';h1.style.top=a[1]+'%';}
+  if(h2){h2.style.left=a[2]+'%';h2.style.top=a[3]+'%';}
+}
+/* Old versions stored connector arrows on the board; turn them into real elements */
+function convertOldArrows(b){
+  const old=b.arrows;
+  if(old===undefined)return false;
+  delete b.arrows;
+  if(!Array.isArray(old)||!old.length)return true;
+  const rc=id=>b.regions.find(q=>q.id===id);
+  const edge=(R,p)=>{const cx=R.x+R.w/2,cy=R.y+R.h/2,dx=p[0]-cx,dy=p[1]-cy;if(!dx&&!dy)return [cx,cy];const t=Math.min(dx?R.w/2/Math.abs(dx):Infinity,dy?R.h/2/Math.abs(dy):Infinity);return t>=1?[cx,cy]:[cx+dx*t,cy+dy*t];};
+  let n=Math.max(0,...b.regions.map(r=>parseInt(r.num,10)||0));
+  old.forEach(a=>{
+    const A=rc(a.from),B=rc(a.to);
+    const cA=A?[A.x+A.w/2,A.y+A.h/2]:[+a.x1||0,+a.y1||0],cB=B?[B.x+B.w/2,B.y+B.h/2]:[+a.x2||0,+a.y2||0];
+    const s=A?edge(A,cB):cA,e=B?edge(B,cA):cB;
+    const r={id:a.id||uid(),x:0,y:0,w:2,h:2,num:String(++n),label:a.label||'',feed:'',type:(b.types&&b.types[0])||'Element',concept:'Both',notes:'',t0:'',t1:'',rot:0,fields:[],
+      kind:'arrow',curve:+a.curve||0,dash:!!a.dash,color:/^#[0-9a-f]{6}$/i.test(a.color||'')?a.color:ARROW_COL,target:B?B.id:''};
+    setArrowPts(r,s,e);
+    b.regions.push(r);
+  });
+  return true;
+}
+
 /* ---------- migration (keeps boards from older versions) ---------- */
 async function migrate(b){
   let ch=false;
@@ -733,6 +864,7 @@ async function migrate(b){
   if(!b.canvas){b.canvas={w:b.origW||b.imgW||1080,h:b.origH||b.imgH||1080};ch=true;}
   if(b.canvasAuto===undefined){b.canvasAuto=true;ch=true;}
   b.regions.forEach(r=>{if(!Array.isArray(r.fields))r.fields=[];if(!r.type)r.type=b.types[0];if(r.num===undefined)r.num='';});
+  if(convertOldArrows(b))ch=true;
   if(ch)await dbPut(b);
   return b;
 }
@@ -808,7 +940,7 @@ function renderBar(){
     <span class="sep"></span>
     <span class="zoom"><button class="btn sm" data-act="zoomOut" title="Zoom out (-)">−</button><span id="zoomLbl" class="zl"></span><button class="btn sm" data-act="zoomIn" title="Zoom in (+)">+</button><button class="btn sm" data-act="zoomFit" title="Fit (0)">Fit</button><button class="btn sm" data-act="zoom100" title="Actual size (1)">100%</button></span>
     <span class="sep only-edit"></span>
-    <label class="opt only-edit">Draw <select data-bar="tool"><option value="rect"${tool==='rect'?' selected':''}>▭ Rectangle</option><option value="free"${tool==='free'?' selected':''}>✎ Freehand</option></select></label>
+    <label class="opt only-edit">Draw <select data-bar="tool"><option value="rect"${tool==='rect'?' selected':''}>▭ Rectangle (R)</option><option value="free"${tool==='free'?' selected':''}>✎ Freehand (F)</option><option value="arrow"${tool==='arrow'?' selected':''}>➜ Arrow (A)</option></select></label>
     <label class="opt only-edit">Snap <select data-bar="snap">${[0,5,10,20,50].map(v=>`<option value="${v}"${prefs.snap===v?' selected':''}>${v?v+' px':'Off'}</option>`).join('')}</select></label>
     <label class="opt"><input type="checkbox" data-bar="labels"${prefs.labels?' checked':''}> Labels</label>`;
   }else if(view==='library'){
@@ -932,14 +1064,20 @@ function selectRegion(id){selId=id;updateSelectionClasses();renderPanel();}
 
 function setRect(el,r,b=cur){
   el.style.left=r.x+'%';el.style.top=r.y+'%';el.style.width=r.w+'%';el.style.height=r.h+'%';
+  el.style.setProperty('--rot',(r.rot||0)+'deg');
   const d=el.querySelector('.dim');
-  if(d)d.textContent=Math.round(r.w*b.canvas.w/100)+' × '+Math.round(r.h*b.canvas.h/100)+' px';
+  if(d){
+    if(r.kind==='arrow'){const m=arrowMetrics(r,b);d.textContent=m.len+' px · '+m.ang+'°';}
+    else d.textContent=Math.round(r.w*b.canvas.w/100)+' × '+Math.round(r.h*b.canvas.h/100)+' px'+(r.rot?' · '+r.rot+'°':'');
+  }
+  if(r.kind==='arrow'){paintArrow(el,r,b);placeArrowHandles(el,r);}
 }
 function refreshRegionEl(r){
   const el=$(`.region[data-id="${r.id}"]`);if(!el)return;
   el.style.setProperty('--c',regColor(cur,r));
   el.title=[r.label,r.feed].filter(Boolean).join(' — ');
   $('.badge b',el).textContent=r.num||'';$('.badge i',el).textContent=r.label||'';
+  if(r.kind==='arrow')paintArrow(el,r,cur);
 }
 
 /* snap */
@@ -947,6 +1085,20 @@ function snapV(v,axis){
   if(!prefs.snap)return v;
   const size=axis==='x'?cur.canvas.w:cur.canvas.h;
   return clamp(Math.round(v/100*size/prefs.snap)*prefs.snap/size*100,0,100);
+}
+
+/* resize a rotated box (all maths in screen px so the opposite edge stays put) */
+function resizeRot(o,k,dxp,dyp,Ow,Oh){
+  const th=(o.rot||0)*Math.PI/180,c=Math.cos(th),s=Math.sin(th),MINPX=8;
+  const w=o.w/100*Ow,h=o.h/100*Oh,cx=(o.x+o.w/2)/100*Ow,cy=(o.y+o.h/2)/100*Oh;
+  const lx=dxp*c+dyp*s,ly=-dxp*s+dyp*c;
+  let nw=w,nh=h,sx=0,sy=0;
+  if(k.includes('e')){nw=Math.max(MINPX,w+lx);sx=(nw-w)/2;}
+  if(k.includes('w')){nw=Math.max(MINPX,w-lx);sx=-(nw-w)/2;}
+  if(k.includes('s')){nh=Math.max(MINPX,h+ly);sy=(nh-h)/2;}
+  if(k.includes('n')){nh=Math.max(MINPX,h-ly);sy=-(nh-h)/2;}
+  const ncx=cx+sx*c-sy*s,ncy=cy+sx*s+sy*c;
+  return {x:(ncx-nw/2)/Ow*100,y:(ncy-nh/2)/Oh*100,w:nw/Ow*100,h:nh/Oh*100};
 }
 
 function regionEl(reg,b,opt={}){
@@ -965,44 +1117,75 @@ function regionEl(reg,b,opt={}){
     d.addEventListener('click',e=>{e.stopPropagation();selectRegion(selId===reg.id?null:reg.id);});
     return d;
   }
-  ['nw','n','ne','e','se','s','sw','w'].forEach(c=>{const h=document.createElement('div');h.className='handle';h.dataset.h=c;d.appendChild(h);});
+  const isA=reg.kind==='arrow';
+  (isA?['a1','a2']:['nw','n','ne','e','se','s','sw','w']).forEach(c=>{const h=document.createElement('div');h.className='handle';h.dataset.h=c;d.appendChild(h);});
+  const rh=document.createElement('div');rh.className='rot-h';rh.dataset.h='rot';rh.title='Drag to rotate (hold Shift for 15° steps)';d.appendChild(rh);
+  if(isA)placeArrowHandles(d,reg);
 
   d.addEventListener('pointerdown',e=>{
     if(e.button!==0)return;
-    if(e.shiftKey){startDraw(e);return;} // Shift = draw a new box on top of this one
+    if(e.shiftKey&&!(e.target.dataset&&e.target.dataset.h)){startDraw(e);return;} // Shift = draw a new one on top of this
     e.stopPropagation();e.preventDefault();
     if(selId!==reg.id)selectRegion(reg.id);
-    drag={kind:e.target.dataset.h||'move',reg,el:d,rect:$('#overlay').getBoundingClientRect(),sx:e.clientX,sy:e.clientY,o:{x:reg.x,y:reg.y,w:reg.w,h:reg.h}};
+    const o={x:reg.x,y:reg.y,w:reg.w,h:reg.h,rot:reg.rot||0,ap:reg.ap?reg.ap.slice():null};
+    let cx=o.x+o.w/2,cy=o.y+o.h/2;
+    if(isA&&o.ap&&o.ap.length===4){cx=o.x+(o.ap[0]+o.ap[2])/200*o.w;cy=o.y+(o.ap[1]+o.ap[3])/200*o.h;}
+    drag={kind:(e.target.dataset&&e.target.dataset.h)||'move',reg,el:d,rect:$('#overlay').getBoundingClientRect(),sx:e.clientX,sy:e.clientY,o,cx,cy};
     d.classList.add('dragging');
     try{e.target.setPointerCapture(e.pointerId);}catch(_){}
   });
   d.addEventListener('pointermove',e=>{
     if(!drag||drag.el!==d)return;
-    const dx=(e.clientX-drag.sx)/drag.rect.width*100,dy=(e.clientY-drag.sy)/drag.rect.height*100,o=drag.o,r=drag.reg;
-    if(drag.kind==='move'){
+    const r=drag.reg,o=drag.o,k=drag.kind,rc=drag.rect;
+    const dx=(e.clientX-drag.sx)/rc.width*100,dy=(e.clientY-drag.sy)/rc.height*100;
+    if(k==='rot'){
+      const cxp=rc.left+drag.cx/100*rc.width,cyp=rc.top+drag.cy/100*rc.height;
+      let dd=(Math.atan2(e.clientY-cyp,e.clientX-cxp)-Math.atan2(drag.sy-cyp,drag.sx-cxp))*180/Math.PI;
+      if(isA){
+        if(e.shiftKey)dd=Math.round(dd/15)*15;
+        const t={x:o.x,y:o.y,w:o.w,h:o.h,ap:o.ap.slice()};
+        rotArrow(t,dd,b);
+        r.x=t.x;r.y=t.y;r.w=t.w;r.h=t.h;r.ap=t.ap;
+      }else{
+        let v=o.rot+dd;if(e.shiftKey)v=Math.round(v/15)*15;
+        r.rot=+normDeg(v).toFixed(1);
+      }
+    }else if(k==='a1'||k==='a2'){
+      const ps=[{x:o.x+o.ap[0]/100*o.w,y:o.y+o.ap[1]/100*o.h},{x:o.x+o.ap[2]/100*o.w,y:o.y+o.ap[3]/100*o.h}];
+      const mv=k==='a1'?0:1,ot=ps[1-mv];
+      let qx=snapV(clamp((e.clientX-rc.left)/rc.width*100,0,100),'x'),qy=snapV(clamp((e.clientY-rc.top)/rc.height*100,0,100),'y');
+      if(e.shiftKey){
+        const W=IW(b),H=IH(b),vx=(qx-ot.x)*W/100,vy=(qy-ot.y)*H/100,L=Math.hypot(vx,vy),st=Math.PI/12,an=Math.round(Math.atan2(vy,vx)/st)*st;
+        qx=clamp(ot.x+Math.cos(an)*L/W*100,0,100);qy=clamp(ot.y+Math.sin(an)*L/H*100,0,100);
+      }
+      const A=mv===0?[qx,qy]:[ps[0].x,ps[0].y],B=mv===1?[qx,qy]:[ps[1].x,ps[1].y];
+      setArrowPts(r,A,B);
+    }else if(k==='move'){
       r.x=clamp(snapV(o.x+dx,'x'),0,100-o.w);r.y=clamp(snapV(o.y+dy,'y'),0,100-o.h);
+    }else if(o.rot){
+      const n=resizeRot(o,k,e.clientX-drag.sx,e.clientY-drag.sy,rc.width,rc.height);
+      r.x=n.x;r.y=n.y;r.w=Math.max(MIN,n.w);r.h=Math.max(MIN,n.h);
     }else{
-      let x1=o.x,y1=o.y,x2=o.x+o.w,y2=o.y+o.h;const k=drag.kind;
+      let x1=o.x,y1=o.y,x2=o.x+o.w,y2=o.y+o.h;
       if(k.includes('w'))x1=clamp(snapV(x1+dx,'x'),0,x2-MIN);
       if(k.includes('e'))x2=clamp(snapV(x2+dx,'x'),x1+MIN,100);
       if(k.includes('n'))y1=clamp(snapV(y1+dy,'y'),0,y2-MIN);
       if(k.includes('s'))y2=clamp(snapV(y2+dy,'y'),y1+MIN,100);
       r.x=x1;r.y=y1;r.w=x2-x1;r.h=y2-y1;
     }
-    setRect(d,r);syncPx(r);
+    setRect(d,r,b);syncPx(r);
   });
   const end=()=>{if(drag&&drag.el===d){d.classList.remove('dragging');drag=null;checkpoint();}};
   d.addEventListener('pointerup',end);d.addEventListener('pointercancel',end);
   return d;
 }
 
-/* ---------- drawing (rectangle + freehand) ---------- */
+/* ---------- drawing (rectangle, freehand, arrow) ---------- */
 const ptOf=(e,r)=>({x:snapV(clamp((e.clientX-r.left)/r.width*100,0,100),'x'),y:snapV(clamp((e.clientY-r.top)/r.height*100,0,100),'y')});
 const normRect=(a,b)=>({x:Math.min(a.x,b.x),y:Math.min(a.y,b.y),w:Math.abs(b.x-a.x),h:Math.abs(b.y-a.y)});
 
-let tool=prefs.tool==='free'?'free':'rect';
+let tool=['free','arrow'].includes(prefs.tool)?prefs.tool:'rect';
 const FREE_EPS=3;   // higher = smoother, fewer points
-const SVGNS='http://www.w3.org/2000/svg';
 
 function rdp(p,eps){
   if(p.length<3)return p;
@@ -1032,10 +1215,40 @@ function shapeInto(d,reg){
   s.appendChild(p);d.insertBefore(s,d.firstChild);
 }
 
+function arrowEnd(d,e){
+  let p=ptOf(e,d.rect);
+  if(e.shiftKey){
+    const vx=(p.x-d.s.x)/100*d.rect.width,vy=(p.y-d.s.y)/100*d.rect.height,L=Math.hypot(vx,vy),st=Math.PI/12,an=Math.round(Math.atan2(vy,vx)/st)*st;
+    p={x:clamp(d.s.x+Math.cos(an)*L/d.rect.width*100,0,100),y:clamp(d.s.y+Math.sin(an)*L/d.rect.height*100,0,100)};
+  }
+  return p;
+}
+function liveArrow(d){
+  d.el.innerHTML='';
+  const o=arrowBox(d.s.x,d.s.y,d.e.x,d.e.y);
+  const g=sv('g',{transform:`translate(${o.x/100*d.rect.width} ${o.y/100*d.rect.height})`},d.el);
+  arrowSvgInto(g,{x:o.x,y:o.y,w:o.w,h:o.h,ap:o.ap,curve:0,dash:false},ARROW_COL,d.rect.width,d.rect.height,false);
+}
+function finishArrow(d){
+  const px=Math.hypot((d.e.x-d.s.x)/100*d.rect.width,(d.e.y-d.s.y)/100*d.rect.height);
+  if(px<14){selectRegion(null);return;}   // a short click just deselects
+  const o=arrowBox(d.s.x,d.s.y,d.e.x,d.e.y);
+  addRegion({x:o.x,y:o.y,w:o.w,h:o.h},{kind:'arrow',ap:o.ap,curve:0,dash:false,color:ARROW_COL,target:''});
+}
+
 function startDraw(e){
   const ov=$('#overlay');if(!ov)return;
   e.preventDefault();
   const rect=ov.getBoundingClientRect(),col=typeColor(cur,cur.types[0]);
+  if(tool==='arrow'){
+    const svg=document.createElementNS(SVGNS,'svg');
+    svg.setAttribute('class','livefree');svg.setAttribute('viewBox',`0 0 ${rect.width} ${rect.height}`);
+    ov.appendChild(svg);
+    const s=ptOf(e,rect);
+    draw={arrow:true,s,e:s,rect,el:svg};
+    try{ov.setPointerCapture(e.pointerId);}catch(_){}
+    return;
+  }
   if(tool==='free'){
     const svg=document.createElementNS(SVGNS,'svg');
     svg.setAttribute('class','livefree');svg.setAttribute('viewBox',`0 0 ${rect.width} ${rect.height}`);
@@ -1068,6 +1281,7 @@ function attachDraw(ov){
   ov.addEventListener('pointerdown',e=>{if(e.target===ov&&e.button===0)startDraw(e);});
   ov.addEventListener('pointermove',e=>{
     if(!draw)return;
+    if(draw.arrow){draw.e=arrowEnd(draw,e);liveArrow(draw);return;}
     if(draw.free){
       const x=clamp(e.clientX-draw.rect.left,0,draw.rect.width),y=clamp(e.clientY-draw.rect.top,0,draw.rect.height),l=draw.pts[draw.pts.length-1];
       if(Math.hypot(x-l[0],y-l[1])<2)return;
@@ -1081,6 +1295,7 @@ function attachDraw(ov){
     if(!draw)return;
     const d=draw;draw=null;d.el.remove();
     if(cancel)return;
+    if(d.arrow){d.e=arrowEnd(d,e);finishArrow(d);return;}
     if(d.free){finishFree(d);return;}
     const n=normRect(d.s,ptOf(e,d.rect));
     if(n.w>MIN*1.2&&n.h>MIN*1.2)addRegion(n);else selectRegion(null);
@@ -1089,7 +1304,7 @@ function attachDraw(ov){
 }
 function nextNum(){const n=cur.regions.map(r=>parseInt(r.num,10)).filter(x=>!isNaN(x));return String((n.length?Math.max(...n):0)+1);}
 function newRegion(rect,extra={}){
-  return Object.assign({id:uid(),x:rect.x,y:rect.y,w:rect.w,h:rect.h,num:nextNum(),label:'',feed:'',type:cur.types[0],concept:'Both',notes:'',t0:'',t1:'',
+  return Object.assign({id:uid(),x:rect.x,y:rect.y,w:rect.w,h:rect.h,num:nextNum(),label:'',feed:'',type:cur.types[0],concept:'Both',notes:'',t0:'',t1:'',rot:0,
     fields:(cur.fieldNames||[]).map(k=>({k,v:''}))},extra);
 }
 function addRegion(rect,extra){
@@ -1137,12 +1352,12 @@ function renderPanel(){
   if(sel)h+=mode==='view'?detailHTML(sel,cur):formHTML(sel);
   else h+=`<div class="empty-sel">${!cur.image?(cur.vid?'Capture a frame from your video to get started.':'Upload an ad image to get started.'):mode==='view'
     ?'Click a numbered box on the ad (or use ↑ ↓) to see its feed reference.'
-    :'Drag on the image to draw a box (or switch Draw to Freehand). Click a shape to select it; drag to move, pull handles to resize. Hold <b>Shift</b> to draw over an existing one.'}</div>`;
+    :'Drag on empty space to draw with the current tool (Rectangle, Freehand or Arrow). Click an element to select it; drag to move, use the handles to resize and the round handle on top to rotate. Hold <b>Shift</b> to start a new one on top of an existing element.'}</div>`;
   h+=`</div><div class="panel-sec" style="border-bottom:0"><div class="sec-title"><span>All elements · ${n}</span>
     ${mode==='edit'&&n?'<span class="row"><button class="mini" data-act="sortNum">Sort by #</button><button class="mini" data-act="renumber">Renumber</button><button class="mini" data-act="bulk">Bulk edit</button></span>':''}</div>
     ${n>4?`<input class="filter" id="listFilter" placeholder="Filter elements…" value="${esc(listFilter)}">`:''}
     <div id="elList"></div>
-    ${mode==='edit'?'<div class="hint">Shortcuts: arrows nudge (Shift = 10px) · Ctrl+D duplicate · Ctrl+C / V copy &amp; paste · Del delete · Ctrl+Z undo · E / V switch mode · R / F rectangle / freehand · + − 0 1 zoom · [ ] previous / next scene</div>':''}</div>`;
+    ${mode==='edit'?'<div class="hint">Shortcuts: arrows nudge (Shift = 10px) · Ctrl+D duplicate · Ctrl+C / V copy &amp; paste · Del delete · Ctrl+Z undo · E / V switch mode · R / F / A rectangle / freehand / arrow · Shift while rotating = 15° steps · + − 0 1 zoom · [ ] previous / next scene</div>':''}</div>`;
   p.innerHTML=h;renderList();
   const li=$('.list-item.is-selected',p);if(li)li.scrollIntoView({block:'nearest'});
 }
@@ -1152,17 +1367,23 @@ function renderList(){
   const items=cur.regions.filter(r=>!q||[r.num,r.label,r.feed,r.type,r.concept,r.notes].join(' ').toLowerCase().includes(q));
   el.innerHTML=items.length?items.map(r=>`<div class="list-item${r.id===selId?' is-selected':''}" data-id="${r.id}">
     <span class="num" style="background:${regColor(cur,r)}">${esc(r.num||'')}</span>
-    <div style="min-width:0"><div class="li-label">${esc(r.label||'Untitled')}</div><div class="li-feed">${esc(r.feed||'—')}</div></div></div>`).join('')
+    <div style="min-width:0"><div class="li-label">${kindIcon(r)}${esc(r.label||'Untitled')}</div><div class="li-feed">${esc(r.feed||'—')}</div></div></div>`).join('')
     :`<div class="empty-sel">${q?'No matches.':'Nothing mapped yet.'}</div>`;
 }
 function detailHTML(r,b){
   const chips=splitFeed(r.feed),p=pxOf(r,b),col=regColor(b,r),fields=(r.fields||[]).filter(f=>f.k||f.v);
-  return `<div class="detail-head"><div class="num-big" style="background:${col}">${esc(r.num||'·')}</div><h3>${esc(r.label||'Untitled element')}</h3></div>
+  const isA=r.kind==='arrow',m=isA?arrowMetrics(r,b):null;
+  const tg=r.target&&b.regions.find(x=>x.id===r.target);
+  return `<div class="detail-head"><div class="num-big" style="background:${col}">${esc(r.num||'·')}</div><h3>${kindIcon(r)}${esc(r.label||'Untitled element')}</h3></div>
   ${chips.length?`<div class="chips">${chips.map(c=>`<button class="chip" data-copy="${esc(c)}" title="Click to copy">${esc(c)}</button>`).join('')}</div>`:''}
   <div class="tagrow"><span class="tag" style="background:${col}1f;color:${col}">${esc(r.type||'Element')}</span>${r.concept?`<span class="tag t-concept">${esc(r.concept)}</span>`:''}</div>
-  <div class="spec"><div><span>Container</span><b>${p.w} × ${p.h} px</b></div><div><span>Ratio</span><b>${ratioStr(p.w,p.h)}</b></div>
+  <div class="spec">${isA
+    ?`<div><span>Length</span><b>${m.len} px</b></div><div><span>Angle</span><b>${m.ang}°</b></div>`
+    :`<div><span>Container</span><b>${p.w} × ${p.h} px</b></div><div><span>Ratio</span><b>${ratioStr(p.w,p.h)}</b></div>`}
     <div><span>Position</span><b>${p.x}, ${p.y}</b></div><div><span>Canvas</span><b>${b.canvas.w} × ${b.canvas.h}</b></div>
+    ${!isA&&r.rot?`<div><span>Rotation</span><b>${r.rot}°</b></div>`:''}
     ${b.vid?`<div><span>Timing</span><b>${esc(timingStr(r))}</b></div><div><span>Scene</span><b>${esc(fmtT(b.t||0))}</b></div>`:''}</div>
+  ${tg?`<div class="kv"><span>Points to</span><b>#${esc(tg.num||'')} ${esc(tg.label||'Untitled')}</b></div>`:''}
   ${fields.map(f=>`<div class="kv"><span>${esc(f.k)}${f.k?(f.req?'<em class="reqtag">Required</em>':'<em class="opttag">Optional</em>'):''}</span><b>${esc(f.v)}</b></div>`).join('')}
   ${r.notes?`<p class="notes">${esc(r.notes)}</p>`:''}`;
 }
@@ -1170,20 +1391,34 @@ function formHTML(r){
   const p=pxOf(r),types=cur.types.includes(r.type)?cur.types:[...cur.types,r.type];
   const concepts=uniq(['Both',...cur.regions.map(x=>x.concept).filter(Boolean)]);
   const keys=uniq([...(cur.fieldNames||[]),...cur.regions.flatMap(x=>(x.fields||[]).map(f=>f.k)).filter(Boolean)]);
+  const isA=r.kind==='arrow';
+  const others=cur.regions.filter(x=>x.id!==r.id);
+  const curve=r.curve||0;
+  const rotVal=isA?arrowMetrics(r,cur).ang:(r.rot||0);
   return `<div class="form">
   <div class="two"><label>Number<input data-f="num" value="${esc(r.num)}"></label>
     <label>Type<select data-f="type">${types.map(t=>`<option${t===r.type?' selected':''}>${esc(t)}</option>`).join('')}</select></label></div>
-  ${swatchHTML(r)}<label>Label<input data-f="label" value="${esc(r.label)}" placeholder="e.g. Headline"></label>
+  ${swatchHTML(r)}<label>Label<input data-f="label" value="${esc(r.label)}" placeholder="${isA?'e.g. points to the seal':'e.g. Headline'}"></label>
   <label>Feed column(s)<input data-f="feed" value="${esc(r.feed)}" placeholder="e.g. Headline30, PromoCode15"></label>
   <label>Concept / variant<input data-f="concept" list="dlConcept" value="${esc(r.concept)}" placeholder="Both / Grid1 / Grid4"></label>
   <datalist id="dlConcept">${concepts.map(c=>`<option value="${esc(c)}">`).join('')}</datalist>
   <datalist id="dlKeys">${keys.map(c=>`<option value="${esc(c)}">`).join('')}</datalist>
+  ${isA?`<div class="subhead"><span>Arrow</span></div>
+  <div class="two"><label>Line<select data-ar="curve">
+      <option value="0"${curve===0?' selected':''}>Straight</option>
+      <option value="0.25"${curve===0.25?' selected':''}>Curved</option>
+      <option value="-0.25"${curve===-0.25?' selected':''}>Curved (other way)</option></select></label>
+    <label class="inl" style="align-self:end;padding-bottom:7px"><input type="checkbox" data-ar="dash"${r.dash?' checked':''}> Dashed</label></div>
+  <label>Points to<select data-ar="target"><option value="">— nothing —</option>${others.map(x=>`<option value="${x.id}"${r.target===x.id?' selected':''}>#${esc(x.num||'')} ${esc(x.label||'Untitled')}</option>`).join('')}</select></label>
+  <div class="row" style="margin-bottom:6px"><button type="button" class="btn sm" data-act="flipArrow">⇄ Flip direction</button></div>`:''}
   ${cur.vid?`<div class="subhead"><span>Timing in video</span></div>
   <div class="two"><label>Appears (m:ss)<input data-tm="t0" value="${esc(fmtT(r.t0))}" placeholder="0:00"></label>
     <label>Disappears (m:ss)<input data-tm="t1" value="${esc(fmtT(r.t1))}" placeholder="end"></label></div>`:''}
-  <div class="subhead"><span>Container size (px)</span><span class="ratioOut">${ratioStr(p.w,p.h)}</span></div>
+  <div class="subhead"><span>${isA?'Bounding box (px)':'Container size (px)'}</span><span class="ratioOut">${ratioStr(p.w,p.h)}</span></div>
   <div class="four"><label>X<input type="number" min="0" data-px="x" value="${p.x}"></label><label>Y<input type="number" min="0" data-px="y" value="${p.y}"></label>
     <label>W<input type="number" min="1" data-px="w" value="${p.w}"></label><label>H<input type="number" min="1" data-px="h" value="${p.h}"></label></div>
+  <div class="two"><label>${isA?'Angle (°)':'Rotation (°)'}<input type="number" step="1" data-rot value="${rotVal}"></label>
+    <div class="row" style="align-self:end;margin-bottom:10px"><button type="button" class="btn sm" data-act="rot90" title="Rotate 90° clockwise">↻ 90°</button><button type="button" class="btn sm" data-act="rot0" title="${isA?'Point right':'Reset rotation'}">Reset</button></div></div>
   <div class="rowsb"><label class="inl"><input type="checkbox" data-lock${prefs.lock?' checked':''}> Lock ratio</label>
     <select data-ratio><option value="">Set ratio…</option>${['1:1','4:5','5:4','3:4','4:3','9:16','16:9','2:1','1.91:1'].map(x=>`<option>${x}</option>`).join('')}</select></div>
   <div class="subhead"><span>Extra fields</span><button data-act="addField">+ Add</button></div>
@@ -1194,6 +1429,8 @@ function formHTML(r){
 function syncPx(r){
   const p=pxOf(r);
   $$('#selection [data-px]').forEach(i=>{if(i!==document.activeElement)i.value=p[i.dataset.px];});
+  const rt=$('#selection [data-rot]');
+  if(rt&&rt!==document.activeElement)rt.value=r.kind==='arrow'?arrowMetrics(r,cur).ang:(r.rot||0);
   const ro=$('#selection .ratioOut');if(ro)ro.textContent=ratioStr(p.w,p.h);
 }
 function applyPx(r,k,val){
@@ -1206,6 +1443,7 @@ function applyPx(r,k,val){
   const el=$(`.region[data-id="${r.id}"]`);if(el)setRect(el,r);
   syncPx(r);
 }
+function afterRot(r){const el=$(`.region[data-id="${r.id}"]`);if(el)setRect(el,r);syncPx(r);checkpoint();}
 
 let vT=null;
 function propagateVideo(){
@@ -1229,6 +1467,20 @@ $('#panel').addEventListener('input',e=>{
   const sel=getSel();if(!sel||view!=='editor')return;
   const d=t.dataset;
   if(d.f){sel[d.f]=t.value;refreshRegionEl(sel);renderList();checkpoint('f:'+sel.id+d.f);}
+  else if(d.ar){
+    if(d.ar==='dash')sel.dash=t.checked;
+    else if(d.ar==='curve')sel.curve=parseFloat(t.value)||0;
+    else if(d.ar==='target')sel.target=t.value;
+    const el=$(`.region[data-id="${sel.id}"]`);if(el)setRect(el,sel);
+    checkpoint('ar:'+sel.id+d.ar);
+  }
+  else if(d.rot!==undefined){
+    const v=parseFloat(t.value);if(!isFinite(v))return;
+    if(sel.kind==='arrow')rotArrow(sel,v-arrowMetrics(sel,cur).ang,cur);
+    else sel.rot=+normDeg(v).toFixed(1);
+    const el=$(`.region[data-id="${sel.id}"]`);if(el)setRect(el,sel);
+    syncPx(sel);checkpoint('rot:'+sel.id);
+  }
   else if(d.tm){sel[d.tm]=parseT(t.value);checkpoint('tm:'+sel.id+d.tm);}
   else if(d.px){applyPx(sel,d.px,t.value);checkpoint('px:'+sel.id);}
   else if(d.fk!==undefined){sel.fields[+d.fk].k=t.value;checkpoint('fk:'+sel.id+d.fk);}
@@ -1270,6 +1522,15 @@ function panelAct(a){
   else if(act==='sortNum'){cur.regions.sort((x,y)=>(parseFloat(x.num)||1e9)-(parseFloat(y.num)||1e9));checkpoint();renderPanel();}
   else if(act==='bulk')bulkModal();
   else if(act==='toRect'&&sel){delete sel.pts;checkpoint();renderRegions();renderPanel();}
+  else if(act==='flipArrow'&&sel&&sel.kind==='arrow'){
+    const p=sel.ap;sel.ap=[p[2],p[3],p[0],p[1]];sel.curve=-(sel.curve||0);
+    afterRot(sel);renderPanel();
+  }
+  else if(act==='rot90'&&sel){rotateBy(sel,90);afterRot(sel);}
+  else if(act==='rot0'&&sel){
+    if(sel.kind==='arrow')rotArrow(sel,-arrowMetrics(sel,cur).ang,cur);else sel.rot=0;
+    afterRot(sel);
+  }
 }
 function copyText(t){
   if(navigator.clipboard&&window.isSecureContext)return navigator.clipboard.writeText(t);
@@ -1424,7 +1685,7 @@ function grpHTML(g){
     h+=`<div class="grp-row"><span class="bn" title="${esc(dispName(b))}">${esc(dispName(b))}</span><span class="bf${rs?'':' none'}">${rs?esc(rs.map(r=>r.feed||'—').join(' · ')):'not present'}</span></div>`;
   });
   if(on)h+=bs.map((b,i)=>{const rs=g.per[i];if(!rs)return '';
-    return rs.map(r=>{const p=pxOf(r,b);return `<div class="xtra"><b>${esc(dispName(b))}</b> · ${esc(r.type)}${r.concept?' · '+esc(r.concept):''} · ${p.w}×${p.h} px (${ratioStr(p.w,p.h)})${b.vid?' · ⏱ '+esc(timingStr(r)):''}
+    return rs.map(r=>{const p=pxOf(r,b);return `<div class="xtra"><b>${esc(dispName(b))}</b> · ${kindIcon(r)}${esc(r.type)}${r.concept?' · '+esc(r.concept):''} · ${p.w}×${p.h} px (${ratioStr(p.w,p.h)})${r.rot?' · '+r.rot+'°':''}${b.vid?' · ⏱ '+esc(timingStr(r)):''}
       ${(r.fields||[]).filter(f=>f.k||f.v).map(f=>`<br>${esc(f.k)}${f.req?' (required)':''}: ${esc(f.v)}`).join('')}${r.notes?`<br><i>${esc(r.notes)}</i>`:''}</div>`;}).join('');}).join('');
   return h+'</div>';
 }
@@ -1538,9 +1799,9 @@ function exportModal(){
     <button data-exp="all"><b>All templates · JSON backup</b><span>Everything, including images. Use Import to restore or share.</span></button>
     <button data-exp="one"><b>${cur.vid?'This video · JSON (all scenes)':'This template · JSON'}</b><span>${esc(cur.vid?(cur.vname||'Video'):(cur.name||'Untitled'))}</span></button>
     ${cur.vid?'<button data-exp="vcsv"><b>This video · CSV (all scenes)</b><span>One table with every scene, its elements and timings</span></button>':''}
-    <button data-exp="csv"><b>${cur.vid?'This scene':'This template'} · CSV table</b><span>Number, label, feed, concept, ${cur.vid?'timing, ':''}container size px, extra fields, notes</span></button>
+    <button data-exp="csv"><b>${cur.vid?'This scene':'This template'} · CSV table</b><span>Number, label, feed, concept, shape, ${cur.vid?'timing, ':''}container size px, rotation, extra fields, notes</span></button>
     <button data-exp="tsv"><b>${cur.vid?'This scene':'This template'} · copy as table</b><span>Paste into Google Sheets or Excel</span></button>
-    <button data-exp="png"><b>${cur.vid?'This scene':'This template'} · annotated PNG</b><span>The ad with numbered boxes, good for docs</span></button></div>`,
+    <button data-exp="png"><b>${cur.vid?'This scene':'This template'} · annotated PNG</b><span>The ad with numbered boxes, shapes and arrows, good for docs</span></button></div>`,
     actions:[{text:'Close'}]});
   m.addEventListener('click',e=>{const b=e.target.closest('[data-exp]');if(!b)return;closeModal();exporters[b.dataset.exp]();});
 }
@@ -1550,14 +1811,27 @@ function exportModal(){
    ========================================================= */
 function downloadBlob(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1500);}
 async function serializeBoard(b){const o=clean(b);o.image=b.image?await blobToDataURL(b.image):null;return o;}
+const shapeName=r=>r.kind==='arrow'?'Arrow':(Array.isArray(r.pts)&&r.pts.length>=3?'Freehand':'Rectangle');
 function tableRows(b){
   const v=!!b.vid;
-  const head=['#','Label','Type','Feed columns','Concept',...(v?['Scene time','Appears','Disappears']:[]),'X (px)','Y (px)','Width (px)','Height (px)','Ratio','Extra fields','Notes'];
-  return [head,...b.regions.map(r=>{const p=pxOf(r,b);return [r.num,r.label,r.type,r.feed,r.concept,...(v?[fmtT(b.t||0),fmtT(r.t0),fmtT(r.t1)]:[]),p.x,p.y,p.w,p.h,ratioStr(p.w,p.h),
+  const head=['#','Label','Type','Feed columns','Concept','Shape',...(v?['Scene time','Appears','Disappears']:[]),'X (px)','Y (px)','Width (px)','Height (px)','Ratio','Rotation / angle (°)','Extra fields','Notes'];
+  return [head,...b.regions.map(r=>{const p=pxOf(r,b);return [r.num,r.label,r.type,r.feed,r.concept,shapeName(r),...(v?[fmtT(b.t||0),fmtT(r.t0),fmtT(r.t1)]:[]),p.x,p.y,p.w,p.h,ratioStr(p.w,p.h),
+    r.kind==='arrow'?arrowMetrics(r,b).ang:(r.rot||0),
     (r.fields||[]).filter(f=>f.k||f.v).map(f=>f.k+(f.req?' (required)':'')+': '+f.v).join('; '),(r.notes||'').replace(/\n/g,' ')];})];
 }
 const csvCell=v=>{const s=String(v??'');return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;};
 const exportName=()=>cur.vid?`${cur.vname||'video'}-${fmtT(cur.t||0).replace(':','m')}`:cur.name;
+function drawArrowCanvas(x,r,col,W,H,ox,oy){
+  const g=arrowGeom(r,W,H);if(!g)return;
+  const sw=g.sw,P=new Path2D(g.d),head=new Path2D();
+  head.moveTo(g.head[0][0],g.head[0][1]);head.lineTo(g.head[1][0],g.head[1][1]);head.lineTo(g.head[2][0],g.head[2][1]);head.closePath();
+  x.save();x.translate(ox,oy);x.lineCap='round';x.lineJoin='round';x.setLineDash([]);
+  x.strokeStyle='rgba(255,255,255,.9)';x.fillStyle='#fff';
+  x.lineWidth=sw*2.4;x.stroke(P);x.lineWidth=sw*1.4;x.stroke(head);x.fill(head);
+  x.strokeStyle=col;x.fillStyle=col;x.lineWidth=sw;
+  x.setLineDash(r.dash?[sw*3,sw*2.2]:[]);x.stroke(P);x.setLineDash([]);x.fill(head);
+  x.restore();
+}
 const exporters={
   async all(){
     const list=[];for(const b of boards)list.push(await serializeBoard(b));
@@ -1583,10 +1857,16 @@ const exporters={
     const s=Math.max(1,c.width/900);x.textAlign='center';x.textBaseline='middle';x.font=`700 ${12*s}px sans-serif`;
     cur.regions.forEach(r=>{
       const col=regColor(cur,r),rx=r.x/100*c.width,ry=r.y/100*c.height,rw=r.w/100*c.width,rh=r.h/100*c.height;
+      const mx=rx+rw/2,my=ry+rh/2,th=(r.rot||0)*Math.PI/180;
+      x.save();x.translate(mx,my);x.rotate(th);x.translate(-mx,-my);
       x.lineWidth=2*s;x.strokeStyle=col;x.fillStyle=col+'26';
-      if(r.pts&&r.pts.length>=3){const pth=new Path2D(ptsPath(r.pts,rw/100,rh/100,rx,ry));x.fill(pth);x.stroke(pth);}else{x.fillRect(rx,ry,rw,rh);x.strokeRect(rx,ry,rw,rh);}
-      x.beginPath();x.arc(rx,ry,11*s,0,Math.PI*2);x.fillStyle=col;x.fill();x.strokeStyle='#fff';x.lineWidth=2*s;x.stroke();
-      x.fillStyle='#fff';x.fillText(String(r.num||''),rx,ry+.5*s);
+      if(r.kind==='arrow')drawArrowCanvas(x,r,col,c.width,c.height,rx,ry);
+      else if(r.pts&&r.pts.length>=3){const pth=new Path2D(ptsPath(r.pts,rw/100,rh/100,rx,ry));x.fill(pth);x.stroke(pth);}
+      else{x.fillRect(rx,ry,rw,rh);x.strokeRect(rx,ry,rw,rh);}
+      x.restore();
+      const ca=Math.cos(th),sa=Math.sin(th),ox=-rw/2,oy=-rh/2,bx=mx+ox*ca-oy*sa,by=my+ox*sa+oy*ca;
+      x.beginPath();x.arc(bx,by,11*s,0,Math.PI*2);x.fillStyle=col;x.fill();x.strokeStyle='#fff';x.lineWidth=2*s;x.stroke();
+      x.fillStyle='#fff';x.fillText(String(r.num||''),bx,by+.5*s);
     });
     c.toBlob(bl=>downloadBlob(bl,`${slug(exportName())}-annotated.png`),'image/png');
   }
@@ -1771,7 +2051,10 @@ document.addEventListener('keydown',e=>{
     if(n)switchScene(n);
     return;
   }
-  if(!mod&&mode==='edit'&&(k==='r'||k==='f')){tool=k==='f'?'free':'rect';prefs.tool=tool;savePrefs();renderBar();toast(tool==='free'?'Freehand drawing':'Rectangle drawing');return;}
+  if(!mod&&mode==='edit'&&(k==='r'||k==='f'||k==='a')){
+    tool=k==='f'?'free':k==='a'?'arrow':'rect';prefs.tool=tool;savePrefs();renderBar();
+    toast(tool==='free'?'Freehand drawing':tool==='arrow'?'Arrow: drag on the image to draw one':'Rectangle drawing');return;
+  }
   if(!mod&&k==='e'){mode='edit';selId=null;render(true);return;}
   if(!mod&&k==='v'){mode='view';selId=null;render(true);return;}
   if(!mod&&(e.key==='+'||e.key==='='))setZoom(effZoom()*1.2);
@@ -1988,287 +2271,7 @@ function playModal(){
   v.addEventListener('loadedmetadata',()=>{try{v.currentTime=t0;}catch(e){}},{once:true});
   onModalClose=()=>{try{v.pause();}catch(e){}};
 }
-/* =========================================================
-   ARROWS  (connect one element to another)
-   ========================================================= */
-let selArrow='';
-const ARROW_COL='#d6336c';
-const ARROW_COLORS=['#d6336c','#e8820c','#12a150','#1a5cff','#7048e8','#0ca5b0','#12141a'];
-const getArrow=()=>selId?null:((cur&&cur.arrows)||[]).find(a=>a.id===selArrow)||null;
-const pctPt=(e,r)=>({x:clamp((e.clientX-r.left)/r.width*100,0,100),y:clamp((e.clientY-r.top)/r.height*100,0,100)});
 
-function sv(tag,at,parent){
-  const n=document.createElementNS(SVGNS,tag);
-  for(const k in at)n.setAttribute(k,at[k]);
-  if(parent)parent.appendChild(n);
-  return n;
-}
-function hitRegion(p,b=cur){
-  let best=null,ba=1e9;
-  b.regions.forEach(r=>{
-    if(p.x>=r.x&&p.x<=r.x+r.w&&p.y>=r.y&&p.y<=r.y+r.h&&r.w*r.h<ba){best=r;ba=r.w*r.h;}
-  });
-  return best?best.id:'';
-}
-function edgePt(R,p){
-  const cx=R.x+R.w/2,cy=R.y+R.h/2,dx=p[0]-cx,dy=p[1]-cy;
-  if(!dx&&!dy)return [cx,cy];
-  const t=Math.min(dx?R.w/2/Math.abs(dx):Infinity,dy?R.h/2/Math.abs(dy):Infinity);
-  return t>=1?[cx,cy]:[cx+dx*t,cy+dy*t];
-}
-/* geometry in W x H units (the image's pixel size), so line and head scale together */
-function arrowShape(a,b,W,H){
-  const rc=id=>{const r=id&&b.regions.find(q=>q.id===id);return r?{x:r.x/100*W,y:r.y/100*H,w:r.w/100*W,h:r.h/100*H}:null;};
-  const A=rc(a.from),B=rc(a.to);
-  const cA=A?[A.x+A.w/2,A.y+A.h/2]:[a.x1/100*W,a.y1/100*H];
-  const cB=B?[B.x+B.w/2,B.y+B.h/2]:[a.x2/100*W,a.y2/100*H];
-  const dx=cB[0]-cA[0],dy=cB[1]-cA[1],k=a.curve||0;
-  const c=[(cA[0]+cB[0])/2-dy*k,(cA[1]+cB[1])/2+dx*k];
-  const sw=Math.max(1.5,W*.004);
-  const s=A?edgePt(A,c):cA;
-  let e=B?edgePt(B,c):cB;
-  let ux=e[0]-c[0],uy=e[1]-c[1],ul=Math.hypot(ux,uy);
-  if(!ul){ux=dx;uy=dy;ul=Math.hypot(ux,uy);}
-  if(!ul)return null;
-  ux/=ul;uy/=ul;
-  if(B)e=[e[0]-ux*sw*1.2,e[1]-uy*sw*1.2];
-  if(Math.hypot(e[0]-s[0],e[1]-s[1])<sw*6)return null;
-  const hl=sw*5.5,hw=sw*2.8,bs=[e[0]-ux*hl,e[1]-uy*hl],nx=-uy,ny=ux;
-  return {
-    sw,
-    d:`M${s[0]} ${s[1]}Q${c[0]} ${c[1]} ${bs[0]} ${bs[1]}`,
-    head:`${e[0]},${e[1]} ${bs[0]+nx*hw},${bs[1]+ny*hw} ${bs[0]-nx*hw},${bs[1]-ny*hw}`,
-    lx:.25*s[0]+.5*c[0]+.25*e[0], ly:.25*s[1]+.5*c[1]+.25*e[1]
-  };
-}
-function arrowEls(parent,a,b,W,H,opt={}){
-  const g=arrowShape(a,b,W,H);if(!g)return;
-  const col=a.color||ARROW_COL,sw=g.sw,grp=sv('g',{},parent);
-  if(opt.sel)sv('path',{d:g.d,fill:'none',stroke:'#1a5cff','stroke-opacity':.35,'stroke-width':sw*4,'stroke-linecap':'round'},grp);
-  sv('path',{d:g.d,fill:'none',stroke:'#fff','stroke-opacity':.9,'stroke-width':sw*2.4,'stroke-linecap':'round'},grp);
-  sv('polygon',{points:g.head,fill:'#fff',stroke:'#fff','stroke-opacity':.9,'stroke-width':sw*1.4,'stroke-linejoin':'round'},grp);
-  const line={d:g.d,fill:'none',stroke:col,'stroke-width':sw,'stroke-linecap':'round'};
-  if(a.dash)line['stroke-dasharray']=`${sw*3} ${sw*2.2}`;
-  sv('path',line,grp);
-  sv('polygon',{points:g.head,fill:col,stroke:col,'stroke-width':sw*.4,'stroke-linejoin':'round'},grp);
-  if(a.label){
-    const t=sv('text',{x:g.lx,y:g.ly-sw*2.6,'text-anchor':'middle','font-size':W*.02,'font-weight':700,'font-family':'sans-serif',fill:col,
-      style:`paint-order:stroke;stroke:#fff;stroke-width:${W*.006}px;stroke-linejoin:round`},grp);
-    t.textContent=a.label;
-  }
-  if(opt.edit){
-    const hit=sv('path',{d:g.d,class:'hit',fill:'none',stroke:'transparent','stroke-width':Math.max(sw*5,W*.012)},grp);
-    hit.addEventListener('pointerdown',ev=>{ev.stopPropagation();ev.preventDefault();selectArrow(a.id);});
-  }
-}
-function drawArrows(ov,b){
-  const old=ov.querySelector(':scope > svg.arrows');if(old)old.remove();
-  const list=b.arrows||[];if(!list.length)return;
-  const W=b.imgW||b.canvas.w,H=b.imgH||b.canvas.h;
-  const ed=view==='editor'&&mode==='edit'&&b===cur;
-  const sel=ed&&!selId?selArrow:'';
-  const s=sv('svg',{class:'arrows',viewBox:`0 0 ${W} ${H}`,preserveAspectRatio:'none'},ov);
-  list.forEach(a=>arrowEls(s,a,b,W,H,{edit:ed,sel:sel===a.id}));
-}
-function refreshArrows(){const ov=$('#overlay');if(ov&&cur&&view==='editor')drawArrows(ov,cur);}
-
-function selectArrow(id){selId=null;selArrow=id;updateSelectionClasses();renderPanel();refreshArrows();}
-function removeArrow(id){
-  cur.arrows=(cur.arrows||[]).filter(a=>a.id!==id);selArrow='';
-  checkpoint();renderRegions();renderPanel();toast('Arrow deleted · Ctrl+Z to undo');
-}
-
-/* ---- drawing an arrow (drag from one element to another) ---- */
-function startArrow(e,ov,rect){
-  const p=pctPt(e,rect);
-  const svg=document.createElementNS(SVGNS,'svg');
-  svg.setAttribute('class','livefree');svg.setAttribute('viewBox',`0 0 ${rect.width} ${rect.height}`);
-  ov.appendChild(svg);
-  const st={rect,x1:p.x,y1:p.y,from:hitRegion(p)};
-  try{ov.setPointerCapture(e.pointerId);}catch(_){}
-  const mv=ev=>{
-    const q=pctPt(ev,rect);
-    let to=hitRegion(q);if(to===st.from)to='';
-    svg.innerHTML='';
-    arrowEls(svg,{from:st.from,to,x1:st.x1,y1:st.y1,x2:q.x,y2:q.y,curve:0},cur,rect.width,rect.height,{});
-  };
-  const up=ev=>{
-    window.removeEventListener('pointermove',mv);window.removeEventListener('pointerup',up);window.removeEventListener('pointercancel',up);
-    svg.remove();
-    if(ev.type!=='pointercancel')finishArrow(st,ev);
-  };
-  window.addEventListener('pointermove',mv);window.addEventListener('pointerup',up);window.addEventListener('pointercancel',up);
-}
-function finishArrow(st,ev){
-  const p=pctPt(ev,st.rect);
-  const px=Math.hypot((p.x-st.x1)/100*st.rect.width,(p.y-st.y1)/100*st.rect.height);
-  if(px<14){selectRegion(st.from||null);return;}   // a short click just selects
-  let from=st.from,to=hitRegion(p);
-  if(to&&to===from){from='';to='';}                  // dragged inside one element: free arrow
-  const a={id:uid(),from,to,x1:st.x1,y1:st.y1,x2:p.x,y2:p.y,color:'',label:'',curve:0,dash:false};
-  (cur.arrows=cur.arrows||[]).push(a);
-  selId=null;selArrow=a.id;
-  checkpoint();renderRegions();renderPanel();
-  const f=$('#selection [data-ar="label"]');if(f)f.focus();
-}
-/* In Arrow mode every press on the image starts an arrow (even on top of an element) */
-$('#stage').addEventListener('pointerdown',e=>{
-  if(tool!=='arrow'||view!=='editor'||mode!=='edit'||e.button!==0)return;
-  if(e.target.closest&&e.target.closest('.hit'))return;
-  const ov=$('#overlay');if(!ov||!ov.contains(e.target))return;
-  e.stopPropagation();e.preventDefault();
-  startArrow(e,ov,ov.getBoundingClientRect());
-},true);
-
-/* ---- side panel form for the selected arrow ---- */
-function arrowFormHTML(a){
-  const col=a.color||ARROW_COL;
-  const nm=id=>{const r=id&&cur.regions.find(x=>x.id===id);return r?('#'+(r.num||'')+' '+(r.label||'Untitled')):'free point';};
-  return `<div class="form">
-    <div class="arr-ends"><b>${esc(nm(a.from))}</b><span>➜</span><b>${esc(nm(a.to))}</b></div>
-    <label>Label (optional)<input data-ar="label" value="${esc(a.label)}" placeholder="e.g. overlaps, replaces, drives"></label>
-    <div class="cp-lab">Colour</div>
-    <div class="swrow" style="margin-bottom:10px">${ARROW_COLORS.map(c=>`<button type="button" class="sw${c===col?' on':''}" data-arc="${c}" style="--s:${c}" title="${c}"></button>`).join('')}
-      <input type="color" data-ar="color" value="${col}" style="width:34px;height:24px;padding:0;margin:0;border:1px solid var(--line);border-radius:5px;background:none;cursor:pointer"></div>
-    <div class="two"><label>Line<select data-ar="curve">
-      <option value="0"${String(a.curve||0)==='0'?' selected':''}>Straight</option>
-      <option value="0.25"${a.curve===0.25?' selected':''}>Curved</option>
-      <option value="-0.25"${a.curve===-0.25?' selected':''}>Curved (other way)</option></select></label>
-      <label class="inl" style="align-self:end;padding-bottom:7px"><input type="checkbox" data-ar="dash"${a.dash?' checked':''}> Dashed</label></div>
-    <div class="row"><button type="button" class="btn sm" data-arb="flip">⇄ Flip direction</button><button type="button" class="btn sm ghost danger" data-arb="del">Delete arrow</button></div>
-    <div class="hint">Tip: press <b>A</b> and drag from one element to another. Press <b>R</b> to go back to moving and selecting elements.</div></div>`;
-}
-$('#panel').addEventListener('input',e=>{
-  const k=e.target.dataset&&e.target.dataset.ar;if(!k)return;
-  const a=getArrow();if(!a)return;
-  if(k==='label')a.label=e.target.value;
-  else if(k==='color')a.color=e.target.value;
-  else if(k==='curve')a.curve=parseFloat(e.target.value)||0;
-  else if(k==='dash')a.dash=e.target.checked;
-  checkpoint('ar:'+a.id+k);   // also redraws the arrows
-});
-$('#panel').addEventListener('click',e=>{
-  const a=getArrow();if(!a||mode!=='edit')return;
-  const c=e.target.closest('[data-arc]'),b=e.target.closest('[data-arb]');
-  if(c){a.color=c.dataset.arc;checkpoint();renderPanel();}
-  else if(b){
-    if(b.dataset.arb==='del')removeArrow(a.id);
-    else if(b.dataset.arb==='flip'){
-      [a.from,a.to]=[a.to,a.from];[a.x1,a.x2]=[a.x2,a.x1];[a.y1,a.y2]=[a.y2,a.y1];
-      a.curve=-(a.curve||0);checkpoint();renderPanel();
-    }
-  }
-});
-document.addEventListener('keydown',e=>{
-  if($('#modalRoot').firstChild||view!=='editor'||mode!=='edit')return;
-  const tag=document.activeElement&&document.activeElement.tagName;
-  if(['INPUT','TEXTAREA','SELECT'].includes(tag))return;
-  const a=getArrow();
-  if(a&&(e.key==='Delete'||e.key==='Backspace')){e.preventDefault();removeArrow(a.id);return;}
-  if(!e.ctrlKey&&!e.metaKey&&e.key.toLowerCase()==='a'){
-    tool='arrow';prefs.tool=tool;savePrefs();renderBar();
-    toast('Arrow mode: drag from one element to another');
-  }
-});
-
-/* ---- hook into the existing app (patches, nothing else is edited) ---- */
-const _renderRegions=renderRegions;
-renderRegions=function(){_renderRegions();const ov=$('#overlay');if(ov&&cur)drawArrows(ov,cur);};
-
-const _renderCompare=renderCompare;
-renderCompare=function(){
-  _renderCompare();
-  const ovs=$$('#stage .col .overlay');
-  cmpBoards().forEach((b,i)=>{if(ovs[i])drawArrows(ovs[i],b);});
-};
-
-const _syncPx=syncPx;
-syncPx=function(r){_syncPx(r);refreshArrows();};   // arrows follow while you drag or resize
-
-const _selectRegion=selectRegion;
-selectRegion=function(id){selArrow='';_selectRegion(id);refreshArrows();};
-
-const _renderPanel=renderPanel;
-renderPanel=function(){
-  _renderPanel();
-  if(view==='editor'&&mode==='edit'){
-    const a=getArrow(),s=$('#selection');
-    if(a&&s)s.innerHTML='<div class="sec-title">Selected arrow</div>'+arrowFormHTML(a);
-  }
-};
-
-const _renderBar=renderBar;
-renderBar=function(){
-  _renderBar();
-  const s=$('#bar [data-bar="tool"]');
-  if(s){
-    if(!s.querySelector('[value="arrow"]')){const o=document.createElement('option');o.value='arrow';o.textContent='➜ Arrow';s.appendChild(o);}
-    s.value=tool;
-  }
-};
-
-/* undo / redo now include arrows */
-const snapStr=()=>JSON.stringify({r:cur.regions,a:cur.arrows||[]});
-resetHistory=function(){H.undo=[];H.redo=[];H.snap=snapStr();H.key=null;updateUndoBtns();};
-checkpoint=function(key){
-  const s=snapStr();refreshArrows();if(s===H.snap)return;
-  const now=Date.now();
-  if(!(key&&H.key===key&&now-H.t<1200)){H.undo.push(H.snap);if(H.undo.length>150)H.undo.shift();}
-  H.key=key||null;H.t=now;H.snap=s;H.redo=[];save();updateUndoBtns();
-};
-applySnap=function(){
-  const o=JSON.parse(H.snap);cur.regions=o.r||[];cur.arrows=o.a||[];
-  H.key=null;if(!getSel())selId=null;
-  save();renderRegions();renderPanel();updateUndoBtns();
-};
-
-/* duplicating a template or video gives the copy its own arrows */
-async function dealias(){
-  const seen=new Set();
-  for(const b of boards){
-    if(!b.arrows||!b.arrows.length)continue;
-    if(seen.has(b.arrows)){b.arrows=JSON.parse(JSON.stringify(b.arrows));await dbPut(b);}
-    else seen.add(b.arrows);
-  }
-}
-const _dupBoard=duplicateBoard;
-duplicateBoard=async function(b){await _dupBoard(b);await dealias();};
-const _dupVideo=duplicateVideo;
-duplicateVideo=async function(v){await _dupVideo(v);await dealias();};
-
-/* arrows in the annotated PNG export */
-function drawArrowsCanvas(x,b,W,H){
-  (b.arrows||[]).forEach(a=>{
-    const g=arrowShape(a,b,W,H);if(!g)return;
-    const col=a.color||ARROW_COL,sw=g.sw,P=new Path2D(g.d);
-    const pts=g.head.split(' ').map(s=>s.split(',').map(Number));
-    const head=new Path2D();head.moveTo(pts[0][0],pts[0][1]);head.lineTo(pts[1][0],pts[1][1]);head.lineTo(pts[2][0],pts[2][1]);head.closePath();
-    x.lineCap='round';x.lineJoin='round';x.setLineDash([]);
-    x.strokeStyle='rgba(255,255,255,.9)';x.fillStyle='#fff';
-    x.lineWidth=sw*2.4;x.stroke(P);x.lineWidth=sw*1.4;x.stroke(head);x.fill(head);
-    x.strokeStyle=col;x.fillStyle=col;x.lineWidth=sw;
-    x.setLineDash(a.dash?[sw*3,sw*2.2]:[]);x.stroke(P);x.setLineDash([]);x.fill(head);
-    if(a.label){
-      x.font=`700 ${W*.02}px sans-serif`;x.textAlign='center';x.textBaseline='alphabetic';
-      x.lineWidth=W*.006;x.strokeStyle='#fff';x.strokeText(a.label,g.lx,g.ly-sw*2.6);
-      x.fillStyle=col;x.fillText(a.label,g.lx,g.ly-sw*2.6);
-    }
-  });
-}
-const _downloadBlob=downloadBlob;
-downloadBlob=function(blob,name){
-  if(/-annotated\.png$/.test(name)&&cur&&(cur.arrows||[]).length){
-    const u=URL.createObjectURL(blob);
-    loadImg(u).then(img=>{
-      const c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;
-      const x=c.getContext('2d');x.drawImage(img,0,0);
-      drawArrowsCanvas(x,cur,c.width,c.height);
-      c.toBlob(b2=>{URL.revokeObjectURL(u);_downloadBlob(b2,name);},'image/png');
-    }).catch(()=>_downloadBlob(blob,name));
-    return;
-  }
-  _downloadBlob(blob,name);
-};
 boot();
 </script>
 </body>
