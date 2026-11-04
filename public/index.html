@@ -309,6 +309,23 @@ body[data-role=view] [data-act="boardSettings"],body[data-role=view] [data-act="
 body[data-role=view] [data-act="cdel"],body[data-role=view] [data-act="upload"],
 body[data-role=view] .card.add{display:none!important}
 
+/* TRE-FOLDERS css */
+.fbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 16px}
+.fchip{display:inline-flex;align-items:center;background:#fff;border:1px solid var(--line);border-radius:20px;font-size:13px;font-weight:600;color:#3a4150;overflow:hidden;transition:.12s}
+.fchip>button{border:0;background:transparent;cursor:pointer;font:inherit;color:inherit;padding:6px 12px}
+.fchip>button.fi{padding:6px 5px;opacity:.5;font-size:11px}
+.fchip>button.fi:last-child{padding-right:10px}
+.fchip>button.fi:hover{opacity:1}
+.fchip small{font-weight:500;color:var(--muted);margin-left:3px}
+.fchip:hover{border-color:#cfd4de}
+.fchip.on{background:var(--blue-soft);border-color:var(--blue);color:#153fa8}
+.fchip.fover{background:var(--blue-soft);border-color:var(--blue);outline:2px dashed var(--blue);outline-offset:1px}
+.ftag{margin-top:4px;font-size:11px;font-weight:600;color:#153fa8}
+.frow{padding:0 13px 12px}
+.fmove{width:100%;font-size:12px;padding:5px 6px}
+.card.dragging{opacity:.4}
+.fempty{padding:30px;text-align:center;color:var(--muted);font-weight:500}
+
 </style>
 </head>
 <body>
@@ -2343,6 +2360,172 @@ boot=async function(){
   setupRoleUI();
   return _boot();
 };
+
+/* TRE-FOLDERS js: Library folders */
+let libFolder='all';
+let localFolders=[];
+try{localFolders=JSON.parse(localStorage.getItem('tre_folders')||'[]');if(!Array.isArray(localFolders))localFolders=[];}catch(e){localFolders=[];}
+const saveLocalFolders=()=>{try{localStorage.setItem('tre_folders',JSON.stringify(localFolders));}catch(e){}};
+const fEsc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const sameF=(a,b)=>String(a||'').toLowerCase()===String(b||'').toLowerCase();
+
+function flNames(){
+  const m=new Map();
+  boards.forEach(b=>{if(b.folder)m.set(b.folder.toLowerCase(),b.folder);});
+  if(!RO())localFolders.forEach(n=>{if(!m.has(n.toLowerCase()))m.set(n.toLowerCase(),n);});
+  return [...m.values()].sort((a,b)=>a.localeCompare(b));
+}
+function flItems(){
+  const m=new Map();
+  boards.forEach(b=>{
+    const k=b.vid||b.id;let it=m.get(k);
+    if(!it){it={key:k,folder:'',list:[]};m.set(k,it);}
+    it.list.push(b);if(b.folder&&!it.folder)it.folder=b.folder;
+  });
+  return m;
+}
+const flOf=e=>e.video?((e.scenes.find(s=>s.folder)||{}).folder||''):(e.b.folder||'');
+
+const _libEntries0=libEntries;
+libEntries=function(){
+  const res=_libEntries0();
+  if(libFolder==='all')return res;
+  return res.filter(e=>{const f=flOf(e);return libFolder==='none'?!f:sameF(f,libFolder.slice(2));});
+};
+
+async function flMove(key,folder){
+  if(RO()){ROMSG();return;}
+  const it=flItems().get(key);if(!it)return;
+  if(typeof flushSave==='function')flushSave();
+  folder=String(folder||'').trim().slice(0,80);
+  for(const b of it.list){b.folder=folder;await dbPut(b);}
+  render();
+  toast(folder?('Moved to "'+folder+'"'):'Moved to Unfiled');
+}
+async function flNew(moveKey){
+  if(RO()){ROMSG();return;}
+  let n=prompt('New folder name:');if(n==null)return;
+  n=n.trim().slice(0,80);if(!n)return;
+  const ex=flNames().find(x=>sameF(x,n));
+  if(ex){n=ex;toast('That folder already exists');}
+  else{localFolders.push(n);saveLocalFolders();}
+  if(moveKey)await flMove(moveKey,n);
+  else{libFolder='f:'+n;render();}
+}
+async function flRename(old){
+  if(RO()){ROMSG();return;}
+  let n=prompt('Rename folder:',old);if(n==null)return;
+  n=n.trim().slice(0,80);if(!n||n===old)return;
+  if(flNames().some(x=>!sameF(x,old)&&sameF(x,n))){toast('A folder with that name already exists');return;}
+  if(typeof flushSave==='function')flushSave();
+  for(const b of boards.filter(b=>sameF(b.folder,old))){b.folder=n;await dbPut(b);}
+  localFolders=localFolders.filter(x=>!sameF(x,old));localFolders.push(n);saveLocalFolders();
+  if(libFolder==='f:'+old)libFolder='f:'+n;
+  render();toast('Folder renamed');
+}
+async function flDelete(name){
+  if(RO()){ROMSG();return;}
+  const list=boards.filter(b=>sameF(b.folder,name));
+  const n=new Set(list.map(b=>b.vid||b.id)).size;
+  if(!confirm('Delete the folder "'+name+'"?\n'+(n?n+' template'+(n===1?'':'s')+' will move back to Unfiled. Nothing else is deleted.':'It is empty.')))return;
+  if(typeof flushSave==='function')flushSave();
+  for(const b of list){b.folder='';await dbPut(b);}
+  localFolders=localFolders.filter(x=>!sameF(x,name));saveLocalFolders();
+  if(libFolder==='f:'+name)libFolder='all';
+  render();toast('Folder deleted');
+}
+
+function flBar(arr,names,ro){
+  const none=arr.filter(i=>!i.folder).length;
+  let h='<div class="fbar">';
+  h+=`<span class="fchip${libFolder==='all'?' on':''}"><button data-fact="sel" data-f="all">All <small>${arr.length}</small></button></span>`;
+  h+=`<span class="fchip${libFolder==='none'?' on':''}" data-fdrop="__none"><button data-fact="sel" data-f="none">Unfiled <small>${none}</small></button></span>`;
+  names.forEach(n=>{
+    const c=arr.filter(i=>sameF(i.folder,n)).length;
+    h+=`<span class="fchip${libFolder==='f:'+n?' on':''}" data-fdrop="f:${fEsc(n)}"><button data-fact="sel" data-f="f:${fEsc(n)}">📁 ${fEsc(n)} <small>${c}</small></button>`
+      +(ro?'':`<button class="fi" data-fact="ren" data-f="${fEsc(n)}" title="Rename folder">✎</button><button class="fi" data-fact="del" data-f="${fEsc(n)}" title="Delete folder">✕</button>`)
+      +'</span>';
+  });
+  if(!ro)h+='<button class="btn sm" data-fact="new">+ New folder</button>';
+  return h+'</div>';
+}
+function flDecorate(){
+  const st=$('#stage');if(!st||view!=='library')return;
+  const ro=RO(),names=flNames(),items=flItems(),arr=[...items.values()];
+  if(names.length||!ro)st.insertAdjacentHTML('afterbegin',flBar(arr,names,ro));
+  const opts='<option value="">📁 Move to…</option><option value="__none">Unfiled</option>'
+    +names.map(n=>`<option value="f:${fEsc(n)}">${fEsc(n)}</option>`).join('')
+    +'<option value="__new">＋ New folder…</option>';
+  let any=false;
+  st.querySelectorAll('.card[data-id],.card[data-vid]').forEach(card=>{
+    any=true;
+    const key=card.dataset.vid||card.dataset.id,it=items.get(key),f=it?it.folder:'';
+    card.querySelectorAll('img').forEach(i=>{i.draggable=false;});
+    const cb=card.querySelector('.cbody');
+    if(f&&libFolder==='all'&&cb)cb.insertAdjacentHTML('beforeend','<div class="ftag">📁 '+fEsc(f)+'</div>');
+    if(!ro){
+      card.draggable=true;card.dataset.fkey=key;
+      card.insertAdjacentHTML('beforeend','<div class="frow"><select class="fmove" title="Move to folder">'+opts+'</select></div>');
+    }
+  });
+  if(!any&&libFolder!=='all'&&!libSearch.trim())
+    st.insertAdjacentHTML('beforeend','<div class="fempty">This folder is empty.'+(ro?'':' Drag a template onto its chip above, or use “Move to…” on a template.')+'</div>');
+}
+
+const _renderLibrary0=renderLibrary;
+renderLibrary=function(){
+  if(libFolder.startsWith('f:')&&!flNames().some(n=>n===libFolder.slice(2)))libFolder='all';
+  _renderLibrary0();
+  try{flDecorate();}catch(err){console.error('folders',err);}
+};
+
+/* clicks on folder chips / the Move to dropdown (capture so cards do not open) */
+$('#stage').addEventListener('click',e=>{
+  if(view!=='library')return;
+  if(e.target.closest('.frow')){e.stopPropagation();return;}
+  const b=e.target.closest('[data-fact]');if(!b)return;
+  e.stopPropagation();
+  const act=b.dataset.fact,f=b.dataset.f;
+  if(act==='sel'){libFolder=f;renderLibrary();}
+  else if(act==='new')flNew();
+  else if(act==='ren')flRename(f);
+  else if(act==='del')flDelete(f);
+},true);
+$('#stage').addEventListener('change',e=>{
+  const s=e.target;if(!s.classList||!s.classList.contains('fmove'))return;
+  const card=s.closest('.card'),key=card&&card.dataset.fkey,v=s.value;
+  s.value='';
+  if(!key||!v)return;
+  if(v==='__new')flNew(key);
+  else if(v==='__none')flMove(key,'');
+  else flMove(key,v.slice(2));
+});
+
+/* drag and drop: card -> chip */
+const flIsDrag=e=>e.dataTransfer&&Array.from(e.dataTransfer.types||[]).includes('text/tre-card');
+const flClear=()=>document.querySelectorAll('.fchip.fover').forEach(c=>c.classList.remove('fover'));
+document.addEventListener('dragstart',e=>{
+  const card=e.target.closest&&e.target.closest('.card[data-fkey]');
+  if(!card||RO())return;
+  e.dataTransfer.setData('text/tre-card',card.dataset.fkey);
+  e.dataTransfer.effectAllowed='move';
+  card.classList.add('dragging');
+});
+document.addEventListener('dragend',()=>{flClear();document.querySelectorAll('.card.dragging').forEach(c=>c.classList.remove('dragging'));});
+['dragenter','dragover','dragleave','drop'].forEach(t=>window.addEventListener(t,e=>{
+  if(!flIsDrag(e))return;
+  e.stopPropagation();
+  const chip=e.target.closest&&e.target.closest('[data-fdrop]');
+  if(t==='dragleave'){if(chip&&!chip.contains(e.relatedTarget))chip.classList.remove('fover');return;}
+  flClear();
+  if(chip&&!RO()){
+    e.preventDefault();e.dataTransfer.dropEffect='move';
+    if(t==='drop'){
+      const key=e.dataTransfer.getData('text/tre-card'),v=chip.dataset.fdrop;
+      flMove(key,v==='__none'?'':v.slice(2));
+    }else chip.classList.add('fover');
+  }
+},true));
 
 boot();
 </script>

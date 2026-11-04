@@ -62,6 +62,7 @@ function sanitizeBoard(b) {
     /* video scenes: boards that share the same vid belong to one video */
     vid: /^[A-Za-z0-9_-]{3,64}$/.test(b.vid || '') ? b.vid : '',
     vname: str(b.vname, 200),
+    folder: str(b.folder, 80),
     vurl: /^https?:\/\//i.test(b.vurl || '') ? str(b.vurl, 1000) : '',
     t: Math.max(0, num(b.t)),
     regions: (Array.isArray(b.regions) ? b.regions : []).slice(0, 1000)
