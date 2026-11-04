@@ -326,6 +326,21 @@ body[data-role=view] .card.add{display:none!important}
 .card.dragging{opacity:.4}
 .fempty{padding:30px;text-align:center;color:var(--muted);font-weight:500}
 
+/* TRE-DETAILS css */
+.tdet .tdrow{border:1px solid var(--line);border-radius:10px;padding:8px;margin-bottom:8px;background:#fff}
+.tdet .tdl{display:flex;gap:6px;align-items:center;margin-bottom:6px}
+.tdet .tdl input{flex:1;min-width:0;font-weight:600}
+.tdet .tdv{width:100%}
+.tdet .tdmv{border:0;background:transparent;cursor:pointer;opacity:.5;padding:2px 3px;font-size:11px}
+.tdet .tdmv:hover{opacity:1}
+.tdet .miss{color:#b42318;font-weight:600}
+.tchk{margin-top:10px;font-size:12px}
+.tsum{color:var(--muted);margin-bottom:6px}
+.tok{color:#067647;font-weight:600}
+.tbad{background:#fdecec;border:1px solid #f6c9c4;color:#b42318;border-radius:8px;padding:8px 10px}
+.tbad ul{margin:6px 0 0 16px;padding:0}
+.twarn{margin-top:4px;font-size:11px;font-weight:700;color:#b42318}
+
 </style>
 </head>
 <body>
@@ -2526,6 +2541,150 @@ document.addEventListener('dragend',()=>{flClear();document.querySelectorAll('.c
     }else chip.classList.add('fover');
   }
 },true));
+
+/* TRE-DETAILS js: template details + required/optional checker */
+const DET_DEFAULT=['CREATIVE LAYOUT','Logo Position','COPY LAYOUT','AUDIO'];
+const detClone=a=>JSON.parse(JSON.stringify(a));
+const tdBlank=s=>!String(s==null?'':s).trim();
+function effDetails(b){
+  if(b&&Array.isArray(b.details))return b.details;
+  return DET_DEFAULT.map(k=>({k:k,v:'',req:true}));
+}
+function tdIssues(list){
+  const det=effDetails(list[0]);
+  const dReq=det.filter(d=>d.req&&!tdBlank(d.k));
+  const dMiss=dReq.filter(d=>tdBlank(d.v));
+  const eMiss=[];let eReq=0;
+  list.forEach(b=>(b.regions||[]).forEach(r=>(r.fields||[]).forEach(f=>{
+    if(f.req&&!tdBlank(f.k)){eReq++;if(tdBlank(f.v))eMiss.push({b:b,r:r,f:f});}
+  })));
+  return {dReq:dReq.length,dMiss:dMiss,eReq:eReq,eMiss:eMiss,n:dMiss.length+eMiss.length};
+}
+const tdList=()=>cur.vid?scenesOf(cur.vid):[cur];
+
+let detT=null;const detPend=new Set();
+async function detFlush(){
+  const l=[...detPend];detPend.clear();
+  for(const b of l){try{await dbPut(b);}catch(e){console.error(e);}}
+}
+function setDet(mut){
+  const arr=detClone(effDetails(cur));mut(arr);
+  tdList().forEach(b=>{b.details=detClone(arr);b.updated=Date.now();detPend.add(b);});
+  clearTimeout(detT);detT=setTimeout(detFlush,400);
+}
+
+function tdHTML(){
+  const list=effDetails(cur),edit=(mode==='edit'&&!RO());
+  let h='<div class="panel-sec tdet" id="tdet"><div class="sec-title"><span>Template details</span>'
+    +(edit?'<span class="row"><button class="mini" data-tact="add">+ Add field</button></span>':'')+'</div>';
+  if(edit){
+    h+=list.map((d,i)=>'<div class="tdrow"><div class="tdl"><input data-dk="'+i+'" value="'+esc(d.k)+'" placeholder="Field name">'
+      +'<button type="button" class="reqbtn'+(d.req?' on':'')+'" data-tact="req" data-i="'+i+'" title="Click to mark required or optional">'+(d.req?'Required':'Optional')+'</button>'
+      +'<button type="button" class="tdmv" data-tact="up" data-i="'+i+'" title="Move up">▲</button>'
+      +'<button type="button" class="tdmv" data-tact="down" data-i="'+i+'" title="Move down">▼</button>'
+      +'<button type="button" class="x" data-tact="del" data-i="'+i+'" title="Remove field">✕</button></div>'
+      +'<input class="tdv" data-dv="'+i+'" value="'+esc(d.v)+'" placeholder="Value (leave empty if not set yet)"></div>').join('');
+    if(!list.length)h+='<div class="empty-sel">No fields yet. Use + Add field.</div>';
+  }else{
+    h+=list.filter(d=>d.k||d.v).map(d=>'<div class="kv"><span>'+esc(d.k)
+      +(d.k?(d.req?'<em class="reqtag">Required</em>':'<em class="opttag">Optional</em>'):'')+'</span><b'
+      +(d.req&&tdBlank(d.v)?' class="miss"':'')+'>'+(tdBlank(d.v)?'—':esc(d.v))+'</b></div>').join('');
+  }
+  return h+'<div class="tchk" id="tchk"></div></div>';
+}
+function tdCheck(){
+  const el=$('#tchk');if(!el)return;
+  const list=tdList(),x=tdIssues(list),multi=list.length>1,bits=[];
+  if(x.dReq)bits.push('Details: '+(x.dReq-x.dMiss.length)+' of '+x.dReq+' required filled');
+  if(x.eReq)bits.push('Element fields: '+(x.eReq-x.eMiss.length)+' of '+x.eReq+' required filled');
+  let h='<div class="tsum">'+(bits.length?bits.join(' · '):'No required fields set.')+'</div>';
+  if(x.n){
+    const items=x.dMiss.map(d=>'Template: '+esc(d.k)).concat(x.eMiss.map(m=>'#'+esc(m.r.num)+' '+esc(m.r.label||'')+' → '+esc(m.f.k)+(multi?' ('+esc(m.b.name||'scene')+')':'')));
+    h+='<div class="tbad"><b>⚠ '+x.n+' required field'+(x.n===1?'':'s')+' empty</b><ul>'
+      +items.slice(0,8).map(s=>'<li>'+s+'</li>').join('')+'</ul>'
+      +(items.length>8?'<div>+ '+(items.length-8)+' more</div>':'')+'</div>';
+  }else if(x.dReq||x.eReq)h+='<div class="tok">✓ All required fields are filled</div>';
+  el.innerHTML=h;
+}
+function tdRefresh(){const o=$('#tdet');if(o)o.outerHTML=tdHTML();tdCheck();}
+
+const _renderPanel0=renderPanel;
+renderPanel=function(){
+  _renderPanel0.apply(this,arguments);
+  try{
+    if(view!=='editor')return;
+    const s=$('#selection');if(!s)return;
+    s.insertAdjacentHTML('beforebegin',tdHTML());tdCheck();
+  }catch(err){console.error('details',err);}
+};
+
+$('#panel').addEventListener('click',e=>{
+  const b=e.target.closest&&e.target.closest('[data-tact]');
+  if(!b||!b.closest('#tdet'))return;
+  e.stopPropagation();
+  if(RO()){ROMSG();return;}
+  const a=b.dataset.tact,i=+b.dataset.i;
+  if(a==='add'){
+    setDet(arr=>{arr.push({k:'',v:'',req:false});});tdRefresh();
+    const all=document.querySelectorAll('#tdet [data-dk]');if(all.length)all[all.length-1].focus();
+  }else if(a==='req'){setDet(arr=>{if(arr[i])arr[i].req=!arr[i].req;});tdRefresh();}
+  else if(a==='del'){
+    const d=effDetails(cur)[i];
+    if(d&&!tdBlank(d.v)&&!confirm('Delete this field and its value?'))return;
+    setDet(arr=>{arr.splice(i,1);});tdRefresh();
+  }
+  else if(a==='up'&&i>0){setDet(arr=>{const t=arr[i-1];arr[i-1]=arr[i];arr[i]=t;});tdRefresh();}
+  else if(a==='down'){setDet(arr=>{if(i<arr.length-1){const t=arr[i+1];arr[i+1]=arr[i];arr[i]=t;}});tdRefresh();}
+},true);
+$('#panel').addEventListener('input',e=>{
+  const t=e.target;if(!t.closest||!t.closest('#tdet'))return;
+  const hasK=t.dataset.dk!==undefined,hasV=t.dataset.dv!==undefined;
+  if(!hasK&&!hasV)return;
+  e.stopPropagation();
+  if(RO())return;
+  const i=+(hasK?t.dataset.dk:t.dataset.dv),val=t.value;
+  setDet(arr=>{if(arr[i])arr[i][hasK?'k':'v']=val;});
+  tdCheck();
+},true);
+/* keep the checker fresh when element fields change */
+$('#panel').addEventListener('input',()=>setTimeout(tdCheck,60));
+$('#panel').addEventListener('click',()=>setTimeout(tdCheck,60));
+
+/* Library: warning badge + Incomplete only */
+let libInc=false;
+const _libEntries1=libEntries;
+libEntries=function(){
+  const res=_libEntries1();
+  if(!libInc)return res;
+  return res.filter(e=>tdIssues(e.video?e.scenes:[e.b]).n>0);
+};
+function tdLibDecorate(){
+  const st=$('#stage');if(!st||view!=='library')return;
+  const all=new Map();
+  boards.forEach(b=>{const k=b.vid||b.id;if(!all.has(k))all.set(k,[]);all.get(k).push(b);});
+  all.forEach(l=>l.sort((a,b)=>(a.t||0)-(b.t||0)));
+  let bad=0;all.forEach(l=>{if(tdIssues(l).n>0)bad++;});
+  let bar=st.querySelector('.fbar');
+  if(!bar){st.insertAdjacentHTML('afterbegin','<div class="fbar"></div>');bar=st.querySelector('.fbar');}
+  bar.insertAdjacentHTML('beforeend','<button class="btn sm'+(libInc?' primary':'')+'" data-tact="inc">⚠ Incomplete only <small>'+bad+'</small></button>');
+  st.querySelectorAll('.card[data-id],.card[data-vid]').forEach(card=>{
+    const l=all.get(card.dataset.vid||card.dataset.id);if(!l)return;
+    const x=tdIssues(l),cb=card.querySelector('.cbody');
+    if(x.n&&cb)cb.insertAdjacentHTML('beforeend','<div class="twarn">⚠ '+x.n+' required empty</div>');
+  });
+  if(libInc&&!st.querySelector('.card[data-id],.card[data-vid]')&&!st.querySelector('.fempty'))
+    st.insertAdjacentHTML('beforeend','<div class="fempty">Every template has its required fields filled.</div>');
+}
+const _renderLibrary1=renderLibrary;
+renderLibrary=function(){
+  _renderLibrary1();
+  try{tdLibDecorate();}catch(err){console.error('details',err);}
+};
+$('#stage').addEventListener('click',e=>{
+  if(view!=='library')return;
+  const b=e.target.closest&&e.target.closest('[data-tact="inc"]');if(!b)return;
+  e.stopPropagation();libInc=!libInc;renderLibrary();
+},true);
 
 boot();
 </script>

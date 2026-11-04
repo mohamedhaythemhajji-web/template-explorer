@@ -63,6 +63,11 @@ function sanitizeBoard(b) {
     vid: /^[A-Za-z0-9_-]{3,64}$/.test(b.vid || '') ? b.vid : '',
     vname: str(b.vname, 200),
     folder: str(b.folder, 80),
+    /* TRE-DETAILS */
+    details: Array.isArray(b.details)
+      ? b.details.slice(0, 50).filter(d => d && typeof d === 'object')
+          .map(d => ({ k: str(d.k, 100), v: str(d.v, 1000), req: !!d.req }))
+      : undefined,
     vurl: /^https?:\/\//i.test(b.vurl || '') ? str(b.vurl, 1000) : '',
     t: Math.max(0, num(b.t)),
     regions: (Array.isArray(b.regions) ? b.regions : []).slice(0, 1000)
