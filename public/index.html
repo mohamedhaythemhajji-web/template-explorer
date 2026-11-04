@@ -2686,6 +2686,95 @@ $('#stage').addEventListener('click',e=>{
   e.stopPropagation();libInc=!libInc;renderLibrary();
 },true);
 
+/* TRE-COPY js: copy and paste elements across templates */
+const CLIPKEY='tre_clip',CLIPALL='tre_clipall';
+let clipAll=[];
+try{const c=JSON.parse(localStorage.getItem(CLIPKEY)||'null');if(c&&!clip)clip=c;}catch(e){}
+try{const a=JSON.parse(localStorage.getItem(CLIPALL)||'[]');if(Array.isArray(a))clipAll=a;}catch(e){}
+const saveClip=()=>{try{localStorage.setItem(CLIPKEY,JSON.stringify(clip||null));}catch(e){}};
+const saveClipAll=()=>{try{localStorage.setItem(CLIPALL,JSON.stringify(clipAll));}catch(e){}};
+window.addEventListener('storage',e=>{
+  try{
+    if(e.key===CLIPKEY)clip=e.newValue?JSON.parse(e.newValue):null;
+    if(e.key===CLIPALL){clipAll=JSON.parse(e.newValue||'[]');if(view==='editor')renderPanel();}
+  }catch(err){}
+});
+
+const isTxt=el=>!!el&&(el.tagName==='TEXTAREA'||(el.tagName==='INPUT'&&!['checkbox','radio','button','range','file'].includes(el.type)));
+const hasSelText=el=>{try{return el.selectionStart!==el.selectionEnd;}catch(e){return false;}};
+
+/* same position when pasting onto a different template */
+const _pasteRegion0=pasteRegion;
+pasteRegion=function(inPlace){
+  if(RO()){ROMSG();return;}
+  if(!clip)return;
+  const near=(a,b)=>Math.abs(a-b)<0.01;
+  const onTop=cur.regions.some(r=>near(r.x,clip.x)&&near(r.y,clip.y)&&near(r.w,clip.w)&&near(r.h,clip.h));
+  return _pasteRegion0.call(this,onTop?inPlace:true);
+};
+
+/* Cmd/Ctrl + C and V even when a dropdown or empty field has focus */
+let pasteSeen=false;
+document.addEventListener('paste',()=>{pasteSeen=true;},true);
+document.addEventListener('keydown',e=>{
+  if(!(e.ctrlKey||e.metaKey)||e.altKey||e.shiftKey)return;
+  const k=e.key.toLowerCase();
+  if(k!=='c'&&k!=='v')return;
+  if(view!=='editor'||mode!=='edit'||$('#modalRoot').firstChild)return;
+  const a=document.activeElement;
+  if(k==='c'){
+    if(isTxt(a)){if(hasSelText(a)||!getSel())return;a.blur();}
+    else if(a&&a.tagName==='SELECT')a.blur();
+    setTimeout(()=>{if(clip)saveClip();},0);
+  }else{
+    if(!clip||RO()||isTxt(a))return;
+    if(a&&a.tagName==='SELECT')a.blur();
+    pasteSeen=false;
+    setTimeout(()=>{
+      if(pasteSeen||!clip||view!=='editor'||mode!=='edit'||$('#modalRoot').firstChild)return;
+      if(isTxt(document.activeElement))return;
+      pasteRegion();
+    },150);
+  }
+},true);
+
+/* copy all / paste all */
+function copyAllEls(){
+  if(!cur.regions.length){toast('Nothing to copy on this template');return;}
+  clipAll=JSON.parse(JSON.stringify(cur.regions));saveClipAll();
+  toast('Copied '+clipAll.length+' element'+(clipAll.length===1?'':'s'));
+  renderPanel();
+}
+function pasteAllEls(){
+  if(RO()){ROMSG();return;}
+  if(!clipAll.length){toast('Copy all elements first');return;}
+  if(cur.regions.length&&!confirm('This template already has '+cur.regions.length+' element(s). Add the '+clipAll.length+' copied element(s) as well?'))return;
+  const empty=!cur.regions.length;
+  clipAll.forEach(src=>{
+    const r=JSON.parse(JSON.stringify(src));r.id=uid();
+    if(!empty)r.num=nextNum();
+    cur.regions.push(r);
+  });
+  selId=null;checkpoint();renderRegions();renderPanel();
+  toast('Pasted '+clipAll.length+' element'+(clipAll.length===1?'':'s'));
+}
+const _renderPanel2=renderPanel;
+renderPanel=function(){
+  _renderPanel2.apply(this,arguments);
+  try{
+    if(view!=='editor'||mode!=='edit'||RO())return;
+    const l=$('#elList');if(!l)return;
+    const sec=l.closest('.panel-sec'),t=sec&&sec.querySelector('.sec-title');
+    if(!t)return;
+    t.insertAdjacentHTML('afterend','<div class="row" style="margin:6px 0 10px"><button class="btn sm" data-cact="copyall">Copy all elements ('+cur.regions.length+')</button><button class="btn sm"'+(clipAll.length?'':' disabled')+' data-cact="pasteall">Paste all ('+clipAll.length+')</button></div>');
+  }catch(err){console.error('copy',err);}
+};
+$('#panel').addEventListener('click',e=>{
+  const b=e.target.closest&&e.target.closest('[data-cact]');if(!b)return;
+  e.stopPropagation();
+  if(b.dataset.cact==='copyall')copyAllEls();else pasteAllEls();
+},true);
+
 boot();
 </script>
 </body>
