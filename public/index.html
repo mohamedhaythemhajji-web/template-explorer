@@ -753,7 +753,7 @@ function applyImage(b,p){
 }
 
 /* ---------- state ---------- */
-let boards=[],cur=null,view='editor',mode='view',selId=null,zoom='fit',imgVersion=0;
+let boards=[],cur=null,view='editor',mode='edit',selId=null,zoom='fit',imgVersion=0;
 let picked=new Set(),libSearch='',libSort='name',libKind='all';
 let cmpIds=[],cmpSel=null,cmpDiff=false,cmpBy='label';
 let listFilter='',clip=null,draw=null,drag=null;
@@ -935,7 +935,7 @@ async function boot(){
   cloudInit();
 }
 function setCurrent(b){flushSave();cur=b;selId=null;imgVersion++;listFilter='';zoom='fit';localStorage.setItem('tre_last',b.id);resetHistory();}
-function openBoard(b){setCurrent(b);view='editor';mode=b.image?'view':'edit';render(true);}
+function openBoard(b){setCurrent(b);view='editor';mode='edit';render(true);}
 function switchScene(b){setCurrent(b);if(!b.image)mode='edit';render(true);}
 function setView(v){
   flushSave();
