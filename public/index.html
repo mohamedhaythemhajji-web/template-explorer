@@ -349,6 +349,13 @@ body[data-role=view] .card.add{display:none!important}
 .msbar b{color:#153fa8;margin-right:auto}
 .mshint{font-size:11px;color:var(--muted);margin:2px 0 8px}
 
+/* TRE-ARROWFIX css */
+.region.arw .hit{pointer-events:stroke}
+.region.arw polygon.hit{pointer-events:all}
+.arwsvg path.hit{vector-effect:non-scaling-stroke;stroke-width:18px}
+.overlay.edit .region.arw .hit{cursor:move}
+.region.arw .handle::after{content:'';position:absolute;inset:-9px}
+
 </style>
 </head>
 <body>
@@ -2934,6 +2941,15 @@ document.addEventListener('keydown',e=>{
     e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();mDel();
   }
 },true);
+
+/* TRE-ARROWFIX js: keep pointer capture alive while an arrow is repainted */
+(function(){
+  const redirect=el=>(el instanceof SVGElement&&el.closest&&el.closest('.region'))||el;
+  ['setPointerCapture','releasePointerCapture','hasPointerCapture'].forEach(n=>{
+    const o=Element.prototype[n];if(!o)return;
+    Element.prototype[n]=function(id){return o.call(redirect(this),id);};
+  });
+})();
 
 boot();
 </script>
