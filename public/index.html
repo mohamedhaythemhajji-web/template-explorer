@@ -356,6 +356,11 @@ body[data-role=view] .card.add{display:none!important}
 .overlay.edit .region.arw .hit{cursor:move}
 .region.arw .handle::after{content:'';position:absolute;inset:-9px}
 
+/* TRE-LABELS css */
+.badge.tiny{height:16px;padding:0 4px;font-size:9px;border-width:1.5px;border-radius:8px;top:-8px;left:-8px}
+.badge.tiny i{display:none!important}
+.canvas.labels .badge.nolbl i:not(:empty){display:none}
+
 </style>
 </head>
 <body>
@@ -2949,6 +2954,87 @@ document.addEventListener('keydown',e=>{
     const o=Element.prototype[n];if(!o)return;
     Element.prototype[n]=function(id){return o.call(redirect(this),id);};
   });
+})();
+
+/* TRE-LABELS js: labels adapt to zoom and stay off arrows */
+(function(){
+  let raf=0;
+  function schedule(){
+    if(raf)return;
+    raf=requestAnimationFrame(function(){raf=0;try{fit();}catch(e){console.error('labels',e);}});
+  }
+  function fit(){
+    document.querySelectorAll('.region').forEach(function(el){
+      const bd=el.querySelector(':scope > .badge');
+      if(!bd||el.classList.contains('live'))return;
+      const r=el._reg,w=el.offsetWidth,h=el.offsetHeight;
+      const sel=el.classList.contains('is-selected');
+      const i=bd.querySelector('i'),dm=el.querySelector(':scope > .dim');
+      bd.style.left='';bd.style.top='';
+      bd.classList.remove('nolbl','tiny');
+      if(i)i.style.maxWidth='';
+      if(dm){dm.style.left='';dm.style.top='';dm.style.marginTop='';}
+      if(!w||!h)return;
+      const arrow=!!r&&r.kind==='arrow';
+      if(!arrow){
+        if(!sel&&(w<22||h<22))bd.classList.add('tiny');
+        if(!sel&&i&&i.textContent&&!bd.classList.contains('tiny')){
+          bd.classList.add('nolbl');
+          const base=bd.offsetWidth;
+          bd.classList.remove('nolbl');
+          const avail=w+8-base-5;
+          if(avail<36)bd.classList.add('nolbl');
+          else i.style.maxWidth=Math.min(170,avail)+'px';
+        }
+        return;
+      }
+      /* arrow: put the label beside the middle of the line */
+      const a=(r.ap&&r.ap.length===4)?r.ap:[0,50,100,50];
+      const sx=a[0]/100*w,sy=a[1]/100*h,ex=a[2]/100*w,ey=a[3]/100*h;
+      const dx=ex-sx,dy=ey-sy,len=Math.hypot(dx,dy);
+      if(!sel){
+        if(len<60)bd.classList.add('tiny');
+        else if(len<110)bd.classList.add('nolbl');
+      }
+      if(len<2)return;
+      const k=r.curve||0;
+      const cx=(sx+ex)/2-dy*k,cy=(sy+ey)/2+dx*k;
+      const px=.25*sx+.5*cx+.25*ex,py=.25*sy+.5*cy+.25*ey;
+      let nx=-dy/len,ny=dx/len;
+      if(ny>0||(Math.abs(ny)<.001&&nx>0)){nx=-nx;ny=-ny;}
+      const bw=bd.offsetWidth,bh=bd.offsetHeight,gap=10;
+      const par=el.offsetParent,CW=par?par.clientWidth:1e9,CH=par?par.clientHeight:1e9;
+      function cand(sg,tw,th){
+        const dist=gap+Math.abs(nx)*tw/2+Math.abs(ny)*th/2;
+        const l=px+sg*nx*dist-tw/2,t=py+sg*ny*dist-th/2;
+        const L0=l+el.offsetLeft,T0=t+el.offsetTop;
+        const over=Math.max(0,-L0)+Math.max(0,L0+tw-CW)+Math.max(0,-T0)+Math.max(0,T0+th-CH);
+        return {l:l,t:t,over:over};
+      }
+      let sg=1,c=cand(1,bw,bh);
+      const c2=cand(-1,bw,bh);
+      if(c2.over<c.over){sg=-1;c=c2;}
+      bd.style.left=c.l+'px';bd.style.top=c.t+'px';
+      if(dm){
+        const dw=dm.offsetWidth||96,dh=dm.offsetHeight||18,d2=cand(-sg,dw,dh);
+        dm.style.marginTop='0';dm.style.left=d2.l+'px';dm.style.top=d2.t+'px';
+      }
+    });
+  }
+  const _sr=setRect;
+  setRect=function(el,r){if(el)el._reg=r;const x=_sr.apply(this,arguments);schedule();return x;};
+  const _re=regionEl;
+  regionEl=function(reg){const d=_re.apply(this,arguments);if(d)d._reg=reg;schedule();return d;};
+  const _rr=renderRegions;
+  renderRegions=function(){const x=_rr.apply(this,arguments);schedule();return x;};
+  const _az=applyZoom;
+  applyZoom=function(){const x=_az.apply(this,arguments);schedule();return x;};
+  const _us=updateSelectionClasses;
+  updateSelectionClasses=function(){const x=_us.apply(this,arguments);schedule();return x;};
+  try{new ResizeObserver(schedule).observe($('#stage'));}catch(e){}
+  window.addEventListener('resize',schedule);
+  $('#bar').addEventListener('input',function(e){if(e.target.dataset&&e.target.dataset.bar==='labels')schedule();});
+  schedule();
 })();
 
 boot();
