@@ -368,6 +368,11 @@ body.zlow .canvas.labels .badge i:not(:empty){display:none}
 body.zlow .canvas.labels .region:hover .badge i:not(:empty),
 body.zlow .canvas.labels .region.is-selected .badge i:not(:empty){display:inline}
 
+/* TRE-BADGES2 css: readable labels at low zoom */
+body.zlow .region .badge{height:18px;padding:0 7px;font-size:10.5px;border-radius:9px;margin-bottom:5px;max-width:none;overflow:visible}
+body.zlow .region.is-selected .badge{margin:0 8px 8px 0}
+body.zlow .canvas.labels .badge i:not(:empty){display:inline;max-width:150px}
+body.zlow .region:hover,body.zlow .region.is-selected{z-index:8}
 </style>
 </head>
 <body>
